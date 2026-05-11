@@ -1,0 +1,10 @@
+{
+  "version": "0.2.1",
+  "tasks": [
+    {
+      "taskLabel": "task-낚시",
+      "appliesTo": "소스/낚시.cpp",
+      "type": "launch"
+    }
+  ]
+}
