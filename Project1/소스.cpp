@@ -5,6 +5,8 @@
 #include <string>
 #include <queue>
 #include <math.h>
+#include <wingdi.h> // 255 0 255 마젠타색을 투명색으로 사용하기 위해 필요
+#pragma comment(lib, "msimg32.lib")
 
 // 이미지소스\\Cursors.ko-KR << 필요한 부분만 잘라서 가공 필요!! 
 // 이미지소스\\낚시\\570x540-Beach_Overview
