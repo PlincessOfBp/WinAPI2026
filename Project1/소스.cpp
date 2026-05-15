@@ -15,16 +15,15 @@ HINSTANCE g_hInst;
 LPCTSTR lpszClass = L"Window Class";
 LPCTSTR lpszWindowName = L"windows program 1";
 
-// 물고기 움직임 유형
-// 각 유형마다 드랍되는 아이템이 다름 (아이템 드랍 구현 시 fishMovementType 변수를 활용할 것)
+// 물고기 움직임 유형 (유형마다 다른 아이템 드랍 예정, 아이템 드랍 구현 시 movementType을 키로 활용할 것)
 enum FishMovementType {
 	FISH_MOVE_RANDOM = 0,      // 기본: 랜덤하게 위아래로 움직임
-	FISH_MOVE_FAST_UP = 1,     // 위로 올라갈 때 빠르게, 내려올 때 느리게
-	FISH_MOVE_FAST_DOWN = 2,   // 아래로 내려갈 때 빠르게, 올라갈 때 느리게
+	FISH_MOVE_FAST_UP = 1,     // 위로 올라갈 때 빠르게
+	FISH_MOVE_FAST_DOWN = 2,   // 아래로 내려갈 때 빠르게
 	FISH_MOVE_IRREGULAR = 3    // 움직임이 크고 불규칙적
 };
 
-// 각 움직임 유형별 등장 비율 (합산이 100이 되도록 설정, 기본값 1:1:1:1)
+// 각 움직임 유형별 등장 비율 (합산 100 기준, 외부에서 조정 가능)
 static int fishMovementRatio[4] = { 25, 25, 25, 25 };
 
 struct GreenBar {
@@ -36,17 +35,17 @@ struct TargetFish {
 	int x, y; // 물고기의 위치
 	int width, height; // 물고기의 크기
 	bool inGreenBar; // 물고기가 초록색 영역 안에 있는지 여부.
-	int moveDirY;    // 물고기 이동 방향 (1: 아래, -1: 위)
-	int moveTimer;   // 방향 전환 타이머 카운터
-	int moveInterval;// 방향 유지 프레임 수 (불규칙 움직임에 활용)
-	FishMovementType movementType; // 이 물고기의 움직임 유형
+	int moveDirY;       // 현재 이동 방향 (1: 아래, -1: 위)
+	int moveTimer;      // 방향 전환 타이머 카운터
+	int moveInterval;   // 방향 유지 프레임 수
+	FishMovementType movementType; // 이번 낚시의 물고기 움직임 유형
 };
 
 struct FishingGage { // 낚시 외부 게이지 정보
 	int x, y; // 게이지의 위치
 	int width, height; // 게이지의 크기
-	int current;     // 현재 게이지 값 (0 ~ max)
-	int maxVal;      // 게이지 최대값
+	int current;  // 현재 게이지 값 (0 ~ maxVal)
+	int maxVal;   // 게이지 최대값
 };
 
 // 물고기 움직임 유형을 등장 비율에 따라 랜덤 선택
@@ -62,9 +61,8 @@ FishMovementType SelectFishMovementType() {
 	return FISH_MOVE_RANDOM;
 }
 
-// inGreenBar 체크: 물고기가 초록 게이지 영역 안에 있는지 판단
+// 물고기가 초록 게이지 영역 안에 있는지 체크
 bool CheckFishInGreenBar(const struct TargetFish& fish, const struct GreenBar& bar) {
-	// 물고기 중심 Y가 초록 바 영역 안에 있으면 true
 	int fishCenterY = fish.y + fish.height / 2;
 	return (fishCenterY >= bar.y && fishCenterY <= bar.y + bar.height);
 }
@@ -72,77 +70,85 @@ bool CheckFishInGreenBar(const struct TargetFish& fish, const struct GreenBar& b
 // 물고기 움직임 처리 (타이머마다 호출)
 void UpdateFishMovement(struct TargetFish& fish) {
 	const int FISH_MIN_Y = 5;
-	const int FISH_MAX_Y = 125; // 5 ~ 125 사이에서 움직임
-
-	int speedNormal = 3;
-	int speedFast = 7;
-	int speedSlow = 2;
+	const int FISH_MAX_Y = 125;
 
 	fish.moveTimer++;
 
 	switch (fish.movementType) {
 	case FISH_MOVE_RANDOM:
-	{
-		// 일정 간격마다 방향을 랜덤하게 바꿈
 		if (fish.moveTimer >= fish.moveInterval) {
-			fish.moveDirY = (rand() % 2 == 0) ? 1 : -1;
-			fish.moveInterval = 5 + rand() % 8; // 5~12 프레임마다 방향 전환
+			if (rand() % 2 == 0) {
+				fish.moveDirY = 1;
+			}
+			else {
+				fish.moveDirY = -1;
+			}
+			fish.moveInterval = 5 + rand() % 8;
 			fish.moveTimer = 0;
 		}
-		fish.y += fish.moveDirY * speedNormal;
+		fish.y += fish.moveDirY * 3;
 		break;
-	}
+
 	case FISH_MOVE_FAST_UP:
-	{
-		// 위로 올라갈 때 빠름, 내려올 때 느림
 		if (fish.moveTimer >= fish.moveInterval) {
-			fish.moveDirY = (rand() % 2 == 0) ? 1 : -1;
+			if (rand() % 2 == 0) {
+				fish.moveDirY = 1;
+			}
+			else {
+				fish.moveDirY = -1;
+			}
 			fish.moveInterval = 6 + rand() % 6;
 			fish.moveTimer = 0;
 		}
-		int spd = (fish.moveDirY == -1) ? speedFast : speedSlow;
-		fish.y += fish.moveDirY * spd;
+		fish.y += fish.moveDirY * (fish.moveDirY == -1 ? 7 : 2); // 위로 올라갈 때 빠름
 		break;
-	}
+
 	case FISH_MOVE_FAST_DOWN:
-	{
-		// 아래로 내려갈 때 빠름, 올라갈 때 느림
 		if (fish.moveTimer >= fish.moveInterval) {
-			fish.moveDirY = (rand() % 2 == 0) ? 1 : -1;
+			if (rand() % 2 == 0) {
+				fish.moveDirY = 1;
+			}
+			else {
+				fish.moveDirY = -1;
+			}
 			fish.moveInterval = 6 + rand() % 6;
 			fish.moveTimer = 0;
 		}
-		int spd = (fish.moveDirY == 1) ? speedFast : speedSlow;
-		fish.y += fish.moveDirY * spd;
+		fish.y += fish.moveDirY * (fish.moveDirY == 1 ? 7 : 2); // 아래로 내려갈 때 빠름
 		break;
-	}
+
 	case FISH_MOVE_IRREGULAR:
-	{
-		// 불규칙적으로 큰 폭으로 움직임: 매 프레임마다 방향이 바뀔 수도 있음
 		if (fish.moveTimer >= fish.moveInterval) {
-			fish.moveDirY = (rand() % 2 == 0) ? 1 : -1;
-			fish.moveInterval = 1 + rand() % 4; // 1~4 프레임마다 방향 전환 (매우 불규칙)
+			if (rand() % 2 == 0) {
+				fish.moveDirY = 1;
+			}
+			else {
+				fish.moveDirY = -1;
+			}
+			fish.moveInterval = 1 + rand() % 4; // 매우 짧은 간격으로 방향 전환
 			fish.moveTimer = 0;
 		}
-		int irregularSpeed = 4 + rand() % 5; // 4~8 사이 랜덤 속도
-		fish.y += fish.moveDirY * irregularSpeed;
+		fish.y += fish.moveDirY * (4 + rand() % 5); // 속도도 매번 랜덤
 		break;
-	}
 	}
 
 	// 범위 제한
-	if (fish.y < FISH_MIN_Y) {
-		fish.y = FISH_MIN_Y;
-		fish.moveDirY = 1;
+	if (fish.y < FISH_MIN_Y) { 
+		fish.y = FISH_MIN_Y; 
+		fish.moveDirY = 1; 
 	}
-	if (fish.y > FISH_MAX_Y) {
-		fish.y = FISH_MAX_Y;
-		fish.moveDirY = -1;
+	if (fish.y > FISH_MAX_Y) { 
+		fish.y = FISH_MAX_Y; 
+		fish.moveDirY = -1; 
 	}
 }
 
 void FishingGameLogic(HDC hDC, HBRUSH hBrush, HBRUSH oldBrush, HPEN hPen, HPEN oldPen, HBITMAP hBitmap_fishing[4], struct GreenBar greenBar, struct TargetFish targetFish, struct FishingGage fishingGage) {
 	// 낚시 게임의 핵심 로직을 구현하는 함수
+	// 게이지 바 속에서 물고기 위 아래로 움직이는 것
+	// 게이지 바 속 초록색 움직이는 것
+	// 초록색 영역 안에 물고기 있으면 게이지 바 옆에 다른 게이지 채워지고 아니면 게이지 하락. 끝까지 하락하면 낚시 실패. 게이지 다 차면 낚시 성공.
+	// 물고기 움직임 유형 : 기본 움직임 (랜덤하게 위아래로 움직인다.), 위로 올라갈 때 빨라짐, 아래로 내려갈 때 빨라짐, 움직임 크고 불규칙적.
 
 	HDC hFishDC = CreateCompatibleDC(hDC);
 	// 낚시 게이지 바 배경
@@ -155,12 +161,7 @@ void FishingGameLogic(HDC hDC, HBRUSH hBrush, HBRUSH oldBrush, HPEN hPen, HPEN o
 
 	if (targetFish.inGreenBar) {
 		SelectObject(hFishDC, hBitmap_fishing[2]);
-		TransparentBlt(hDC,
-			targetFish.x, targetFish.y,
-			targetFish.width, targetFish.height,
-			hFishDC,
-			20, 0, 19, 20,
-			RGB(255, 0, 255));
+		TransparentBlt(hDC, targetFish.x, targetFish.y, targetFish.width, targetFish.height, hFishDC, 20, 0, 19, 20, RGB(255, 0, 255));
 	}
 	else {
 		SelectObject(hFishDC, hBitmap_fishing[2]);
@@ -169,44 +170,23 @@ void FishingGameLogic(HDC hDC, HBRUSH hBrush, HBRUSH oldBrush, HPEN hPen, HPEN o
 
 	DeleteDC(hFishDC);
 
-	// 외부 낚시 게이지 바 그리기 (위에서 아래로 채워짐 / 위에서 줄어듦)
-	// 게이지 바의 전체 영역: (fishingGage.x, fishingGage.y) ~ (fishingGage.x + fishingGage.width, fishingGage.y + fishingGage.height)
-	// current/maxVal 비율만큼 위에서 아래로 채워지는 구조
-	{
-		int gageLeft = fishingGage.x;
-		int gageTop = fishingGage.y;
-		int gageRight = fishingGage.x + fishingGage.width;
-		int gageBottom = fishingGage.y + fishingGage.height;
-		int gageFullH = fishingGage.height;
-
-		// 배경 (빈 게이지)
-		hPen = CreatePen(PS_SOLID, 1, RGB(80, 80, 80));
-		oldPen = (HPEN)SelectObject(hDC, hPen);
-		hBrush = CreateSolidBrush(RGB(50, 50, 50));
-		oldBrush = (HBRUSH)SelectObject(hDC, hBrush);
-		Rectangle(hDC, gageLeft, gageTop, gageRight, gageBottom);
-		SelectObject(hDC, oldPen);
-		SelectObject(hDC, oldBrush);
-		DeleteObject(hPen);
-		DeleteObject(hBrush);
-
-		// 채워진 게이지 (아래에서 위로 상승, 위에서 아래로 줄어듦)
-		// current가 maxVal에 가까울수록 gageTop에서부터 많이 채워짐
-		int filledH = (gageFullH * fishingGage.current) / fishingGage.maxVal;
-		int filledTop = gageBottom - filledH; // 아래에서 위로 채움
-
-		if (filledH > 0) {
-			hPen = CreatePen(PS_SOLID, 1, RGB(255, 180, 0));
-			oldPen = (HPEN)SelectObject(hDC, hPen);
-			hBrush = CreateSolidBrush(RGB(255, 200, 0));
-			oldBrush = (HBRUSH)SelectObject(hDC, hBrush);
-			Rectangle(hDC, gageLeft, filledTop, gageRight, gageBottom);
-			SelectObject(hDC, oldPen);
-			SelectObject(hDC, oldBrush);
-			DeleteObject(hPen);
-			DeleteObject(hBrush);
-		}
-	}
+	hPen = CreatePen(PS_SOLID, 1, RGB(255, 0, 0));
+	oldPen = (HPEN)SelectObject(hDC, hPen);
+	hBrush = CreateSolidBrush(RGB(255, 0, 0));
+	oldBrush = (HBRUSH)SelectObject(hDC, hBrush);
+	// 원본 Rectangle 좌표계: left=fishingGage.width, top=fishingGage.height, right=fishingGage.x+fishingGage.width, bottom=fishingGage.y+fishingGage.height
+	// 전체 게이지 높이 = bottom - top = (fishingGage.y + fishingGage.height) - fishingGage.height = fishingGage.y
+	// 아래(bottom)는 고정, 위(filledTop)가 current/maxVal 비율에 따라 움직임
+	// current == maxVal 이면 filledTop == top (꽉 참), current == 0 이면 filledTop == bottom (빔)
+	int gageTop = fishingGage.height;                          // 전체 게이지의 top 좌표
+	int gageBottom = fishingGage.y + fishingGage.height;          // 전체 게이지의 bottom 좌표 (고정)
+	int gageTotalH = gageBottom - gageTop;                        // 전체 게이지 높이 = fishingGage.y
+	int filledTop = gageBottom - (gageTotalH * fishingGage.current / fishingGage.maxVal);
+	Rectangle(hDC, fishingGage.width, filledTop, fishingGage.x + fishingGage.width, gageBottom);
+	SelectObject(hDC, oldPen);
+	SelectObject(hDC, oldBrush);
+	DeleteObject(hPen);
+	DeleteObject(hBrush);
 }
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
@@ -253,13 +233,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		targetFish.moveDirY = -1;
 		targetFish.moveTimer = 0;
 		targetFish.moveInterval = 5 + rand() % 8;
-		targetFish.movementType = FISH_MOVE_RANDOM; // 낚시 시작 시 SelectFishMovementType()으로 결정
-
-		fishingGage.x = 42;  // 게이지 바 오른쪽 옆에 위치
-		fishingGage.y = 4;
-		fishingGage.width = 8;
-		fishingGage.height = 141;
-		fishingGage.current = 50;  // 초기값: 중간에서 시작
+		targetFish.movementType = FISH_MOVE_RANDOM;
+		fishingGage.width = 32;
+		fishingGage.height = 5;
+		fishingGage.x = 4;
+		fishingGage.y = 145; // 5 ~ 145 사이에서 움직이도록 설정해야 함
+		fishingGage.current = 50;
 		fishingGage.maxVal = 100;
 
 		break;
@@ -290,9 +269,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			targetFish.moveTimer = 0;
 			targetFish.moveInterval = 5 + rand() % 8;
 			targetFish.moveDirY = (rand() % 2 == 0) ? 1 : -1;
-
-			// 외부 게이지 초기화
-			fishingGage.current = 50;
+			fishingGage.current = 50; // 게이지 중간값에서 시작
 
 			SetTimer(hWnd, 2001, 100, NULL); // 낚시 전용 타이머 시작. 0.1초마다 WM_TIMER 메시지 발생
 		}
@@ -319,7 +296,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		switch (wParam) { // 타이머 규칙 : 0XXX : 플레이어 관련 타이머, 1XXX : 농사 관련 타이머, 2XXX : 낚시 관련 타이머, 3XXX : 디펜스 관련 타이머
 		case 2001: // 낚시 전용 타이머
 
-			// 초록 게이지 위아래 이동
 			if (floatingGreenBar) {
 				greenBar.y -= 5; // 초록 게이지가 위로 올라감
 				if (greenBar.y < 5) // 게이지가 너무 위로 올라가지 않도록 제한
@@ -337,10 +313,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			// 물고기가 초록색 영역 안에 있는지 여부 업데이트
 			targetFish.inGreenBar = CheckFishInGreenBar(targetFish, greenBar);
 
-			// 외부 게이지 업데이트
-			// 물고기가 초록 바 안: 게이지 상승 / 밖: 게이지 하락
+			// 외부 게이지 업데이트: 물고기가 초록 바 안이면 상승, 밖이면 하락
 			if (targetFish.inGreenBar) {
-				fishingGage.current += 3;
+				fishingGage.current += 1;
 				if (fishingGage.current > fishingGage.maxVal)
 					fishingGage.current = fishingGage.maxVal;
 			}
@@ -355,10 +330,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				KillTimer(hWnd, 2001);
 				isFishing = false;
 				floatingGreenBar = false;
-				// TODO: 낚시 성공 처리
-				// targetFish.movementType 에 따라 다른 아이템 드랍 처리 예정
-				// ex) if (targetFish.movementType == FISH_MOVE_RANDOM) { /* 일반 물고기 아이템 */ }
-				//     else if (targetFish.movementType == FISH_MOVE_FAST_UP) { /* 희귀 아이템 */ } 등
+				// TODO: 아이템 드랍 처리 - targetFish.movementType 에 따라 다른 아이템 드랍
+				// ex) FISH_MOVE_RANDOM -> 일반 물고기, FISH_MOVE_FAST_UP -> 희귀 물고기 등
 				MessageBox(hWnd, TEXT("낚시 성공!"), TEXT("낚시"), MB_OK);
 			}
 
