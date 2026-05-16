@@ -336,7 +336,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				isFishing = false;
 				floatingGreenBar = false;
 				// TODO: 아이템 드랍 처리 - targetFish.movementType 에 따라 다른 아이템 드랍
-				// ex) FISH_MOVE_RANDOM -> 일반 물고기, FISH_MOVE_FAST_UP -> 희귀 물고기 등
+				// ex) FISH_MOVE_RANDOM -> 일반 물고기
 				MessageBox(hWnd, TEXT("낚시 성공!"), TEXT("낚시"), MB_OK);
 			}
 
