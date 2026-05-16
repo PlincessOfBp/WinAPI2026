@@ -8,7 +8,7 @@
 #include <wingdi.h> // 255 0 255 마젠타색을 투명색으로 사용하기 위해 필요
 #pragma comment(lib, "msimg32.lib")
 
-// 이미지소스\\Cursors.ko-KR << 필요한 부분만 잘라서 가공 필요!! 
+// 이미지소스\\Cursors.ko-KR << 필요한 부분만 잘라서 가공 필요!!
 // 이미지소스\\낚시\\570x540-Beach_Overview
 
 HINSTANCE g_hInst;
@@ -133,13 +133,13 @@ void UpdateFishMovement(struct TargetFish& fish) {
 	}
 
 	// 범위 제한
-	if (fish.y < FISH_MIN_Y) { 
-		fish.y = FISH_MIN_Y; 
-		fish.moveDirY = 1; 
+	if (fish.y < FISH_MIN_Y) {
+		fish.y = FISH_MIN_Y;
+		fish.moveDirY = 1;
 	}
-	if (fish.y > FISH_MAX_Y) { 
-		fish.y = FISH_MAX_Y; 
-		fish.moveDirY = -1; 
+	if (fish.y > FISH_MAX_Y) {
+		fish.y = FISH_MAX_Y;
+		fish.moveDirY = -1;
 	}
 }
 
@@ -200,6 +200,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	static HBITMAP hBitmap;
 	static RECT rc;
 
+	// 농장 배경 (조성현 담당)
+	static HBITMAP hBitmap_farm; // 농장 풍경 배경 이미지
+
 	static bool canFishing; // 특정 영역에서 낚시 가능 여부
 	static bool isFishing; // 낚시 중인지 여부
 	static bool floatingGreenBar; // 초록 게이지가 위로 올라가는지. true면 올라가는 것.
@@ -211,6 +214,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	switch (iMessage)
 	{
 	case WM_CREATE:
+		// 농장 배경 로드 (2288x1856 원본을 화면 가득 채우도록 그릴 예정)
+		hBitmap_farm = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\농장 배경.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+
 		hBitmap = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\570x540-Beach_Overview.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		hBitmap_fishing[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\fishing_37x149.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
@@ -246,6 +252,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	case WM_PAINT:
 		hDC = BeginPaint(hWnd, &ps);
 		hMemDC = CreateCompatibleDC(hDC);
+
+		// 농장 배경 그리기 (원본 2288x1856 → 800x800 클라이언트 영역에 맞춰 축소 출력)
+		if (hBitmap_farm != NULL) {
+			HDC hFarmDC = CreateCompatibleDC(hDC);
+			HBITMAP hOldFarm = (HBITMAP)SelectObject(hFarmDC, hBitmap_farm);
+			SetStretchBltMode(hDC, HALFTONE); // 축소 시 부드럽게
+			StretchBlt(hDC, 0, 0, 800, 800,    // 화면에 출력할 영역
+				hFarmDC, 0, 0, 2288, 1856,     // 원본 비트맵 영역
+				SRCCOPY);
+			SelectObject(hFarmDC, hOldFarm);
+			DeleteDC(hFarmDC);
+		}
+
 		SelectObject(hMemDC, hBitmap);
 
 		if (isFishing)
