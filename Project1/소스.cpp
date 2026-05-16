@@ -268,7 +268,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			targetFish.movementType = SelectFishMovementType();
 			targetFish.moveTimer = 0;
 			targetFish.moveInterval = 5 + rand() % 8;
-			targetFish.moveDirY = (rand() % 2 == 0) ? 1 : -1;
+			if (rand() % 2 == 0) {
+				targetFish.moveDirY = 1;
+			}
+			else {
+				targetFish.moveDirY = -1;
+			}
 			fishingGage.current = 50; // 게이지 중간값에서 시작
 
 			SetTimer(hWnd, 2001, 100, NULL); // 낚시 전용 타이머 시작. 0.1초마다 WM_TIMER 메시지 발생
