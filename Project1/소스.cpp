@@ -7,7 +7,7 @@
 #include <math.h>
 #include <wingdi.h>
 #pragma comment(lib, "msimg32.lib")
-
+//test.case1
 HINSTANCE g_hInst;
 LPCTSTR lpszClass = L"Window Class";
 LPCTSTR lpszWindowName = L"windows program 1";
