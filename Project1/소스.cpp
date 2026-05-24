@@ -943,6 +943,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		case VK_UP:    case 'W': g_keyUp = true;    break;
 		case VK_DOWN:  case 'S': g_keyDown = true;  break;
 		}
+		// 낚시 중 방향키 입력 시 낚시 취소
+		if (isFishing) {
+			if (wParam == VK_LEFT || wParam == 'A' ||
+				wParam == VK_RIGHT || wParam == 'D' ||
+				wParam == VK_UP || wParam == 'W' ||
+				wParam == VK_DOWN || wParam == 'S') {
+				KillTimer(hWnd, 2001);
+				isFishing = false;
+				floatingGreenBar = false;
+			}
+		}
 		InvalidateRect(hWnd, NULL, FALSE);
 		break;
 
