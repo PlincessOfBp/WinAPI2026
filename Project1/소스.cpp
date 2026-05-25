@@ -55,12 +55,13 @@ struct Player {
 	int frameIndex;    // 현재 애니메이션 프레임 (0 ~ COLS-1)
 	int frameTimer;    // 프레임 전환 카운터
 	bool isMoving;     // 이동 중 여부 (정지 시 idle 프레임)
+	// base 크기 16x28
+	HBITMAP base[9]; // 0~2 앞, 3~5 옆, 6~8뒤 01020102, 34353435, 68676867 순으로 걸을 때마다 애니메이션 진행. 멈춰있을 땐 각각 0,3,6 프레임을 사용. 옆면은 참고로 오른쪽 방향 보고있음. 왼쪽 볼 땐 좌우반전 필요.
+	// arm 크기 16x12
+	HBITMAP base_arm[9]; // base와 동일.
 };
 
 static Player g_player = { 380, 380, PLAYER_DISPLAY_W, PLAYER_DISPLAY_H, 4, DIR_DOWN, 0, 0, false };
-
-// 플레이어 스프라이트 시트 비트맵 (없으면 도형 fallback)
-static HBITMAP g_hBitmap_player = NULL;
 
 // 입력 상태
 static bool g_keyLeft = false;
@@ -181,8 +182,7 @@ static bool IsInFishingArea(int px, int py, int pw, int ph, PlayerDir dir) {
 	return false;
 }
 
-// 플레이어 한 프레임 업데이트 (이동 + 화면 경계 충돌 + 애니메이션 + 트리거 체크)
-// 농장 씬일 때만 호출됨.
+// 플레이어 한 프레임 업데이트
 void UpdatePlayer() {
 	int dx = 0, dy = 0;
 	if (g_keyLeft)  dx -= g_player.speed;
@@ -196,17 +196,23 @@ void UpdatePlayer() {
 		dy = (dy * 7) / 10;
 	}
 
-	// ── 낚시터 씬: 이동 불가 영역 충돌 처리 (X/Y 축 분리) ──
+	// 낚시터 씬: 이동 불가 영역 충돌 처리
+	// 발 영역: 플레이어 하단 중앙 (좌우 여백 w/4, 상단 h*3/4 아래)
 	if (g_currentScene == SCENE_FISHING) {
+		int footOffX = g_player.w / 4;
+		int footOffY = g_player.h * 3 / 4;
+		int footW = g_player.w / 2;
+		int footH = g_player.h / 4;
+
 		// X축 먼저 시도
 		int nextX = g_player.x + dx;
-		if (IsBlockedInFishing(nextX, g_player.y, g_player.w, g_player.h)) {
+		if (IsBlockedInFishing(nextX + footOffX, g_player.y + footOffY, footW, footH)) {
 			nextX = g_player.x; // X 이동 취소
 			dx = 0;
 		}
 		// Y축 시도
 		int nextY = g_player.y + dy;
-		if (IsBlockedInFishing(nextX, nextY, g_player.w, g_player.h)) {
+		if (IsBlockedInFishing(nextX + footOffX, nextY + footOffY, footW, footH)) {
 			nextY = g_player.y; // Y 이동 취소
 			dy = 0;
 		}
@@ -225,13 +231,18 @@ void UpdatePlayer() {
 	else if (dy > 0) g_player.dir = DIR_DOWN;
 
 	// 애니메이션 프레임 갱신
+	// 각 방향 걷기 시퀀스: 정면 0,1,0,2 / 옆면 3,4,3,5 / 후면 6,8,6,7
+	static int animSeqFront[4] = { 0, 1, 0, 2 };
+	static int animSeqSide[4] = { 3, 4, 3, 5 };
+	static int animSeqBack[4] = { 6, 8, 6, 7 };
+
 	bool moving = (dx != 0 || dy != 0);
 	g_player.isMoving = moving;
 	if (moving) {
 		g_player.frameTimer++;
 		if (g_player.frameTimer >= PLAYER_ANIM_TICKS_PER_FRAME) {
 			g_player.frameTimer = 0;
-			g_player.frameIndex = (g_player.frameIndex + 1) % PLAYER_SPRITE_COLS;
+			g_player.frameIndex = (g_player.frameIndex + 1) % 4;
 		}
 	}
 	else {
@@ -277,66 +288,88 @@ void DrawPlayer(HDC hDC) {
 	int x = g_player.x;
 	int y = g_player.y;
 
-	if (g_hBitmap_player != NULL) {
-		// 방향 → 시트의 어느 행을 쓸지
-		int row = PLAYER_ROW_DOWN;
-		switch (g_player.dir) {
-		case DIR_DOWN:  row = PLAYER_ROW_DOWN;  break;
-		case DIR_UP:    row = PLAYER_ROW_UP;    break;
-		case DIR_LEFT:  row = PLAYER_ROW_LEFT;  break;
-		case DIR_RIGHT: row = PLAYER_ROW_RIGHT; break;
-		}
-		int col = g_player.frameIndex;
-		int srcX = col * PLAYER_SPRITE_FRAME_W;
-		int srcY = row * PLAYER_SPRITE_FRAME_H;
+	// 방향별 걷기 시퀀스 (UpdatePlayer와 동일)
+	static int animSeqFront[4] = { 0, 1, 0, 2 };
+	static int animSeqSide[4] = { 3, 4, 3, 5 };
+	static int animSeqBack[4] = { 6, 8, 6, 7 };
 
-		HDC memDC = CreateCompatibleDC(hDC);
-		HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, g_hBitmap_player);
-		// 원본 프레임(srcX,srcY ~ +FRAME_W,+FRAME_H)을 (x,y ~ +DISPLAY_W,+DISPLAY_H)로 확대 출력
-		TransparentBlt(hDC,
-			x, y, PLAYER_DISPLAY_W, PLAYER_DISPLAY_H,
-			memDC,
-			srcX, srcY, PLAYER_SPRITE_FRAME_W, PLAYER_SPRITE_FRAME_H,
-			PLAYER_SPRITE_TRANSPARENT);
-		SelectObject(memDC, oldBmp);
-		DeleteDC(memDC);
+	// 현재 방향에 맞는 시퀀스에서 base 인덱스 결정
+	int baseIdx = 0;
+	int armIdx = 0;
+	if (g_player.dir == DIR_DOWN) {
+		baseIdx = animSeqFront[g_player.frameIndex];
+		armIdx = animSeqFront[g_player.frameIndex];
+	}
+	else if (g_player.dir == DIR_UP) {
+		baseIdx = animSeqBack[g_player.frameIndex];
+		armIdx = animSeqBack[g_player.frameIndex];
+	}
+	else { // DIR_LEFT, DIR_RIGHT 모두 옆면 시트 사용
+		baseIdx = animSeqSide[g_player.frameIndex];
+		armIdx = animSeqSide[g_player.frameIndex];
+	}
+
+	// 리소스가 로드된 경우에만 그리기
+	if (g_player.base[baseIdx] == NULL)
 		return;
+
+	HDC memDC = CreateCompatibleDC(hDC);
+
+	// 원본 크기: 16x28(몸), 16x12(팔) → 화면 출력 2배: 32x56, 32x24
+	// 팔 위치 오프셋: 참고함수 기준 y+10 → 2배 확대 시 y+20
+	int dispBodyW = 32;
+	int dispBodyH = 56;
+	int dispArmW = 32;
+	int dispArmH = 24;
+	int armOffY = 20; // 참고함수의 y+10을 2배
+
+	if (g_player.dir == DIR_LEFT) {
+		// 왼쪽은 옆면 리소스를 좌우반전한 임시 비트맵을 만들어 TransparentBlt로 출력
+		// TransparentBlt는 음수 너비를 지원하지 않으므로 반전된 비트맵을 별도 DC에 먼저 그림
+
+		// 몸 반전 그리기
+		HDC flipDC = CreateCompatibleDC(hDC);
+		HBITMAP flipBmp = CreateCompatibleBitmap(hDC, 16, 28);
+		HBITMAP flipOld = (HBITMAP)SelectObject(flipDC, flipBmp);
+		SelectObject(memDC, g_player.base[baseIdx]);
+		// flipDC에 좌우반전해서 그림 (StretchBlt 음수 너비로 반전)
+		StretchBlt(flipDC, 15, 0, -16, 28, memDC, 0, 0, 16, 28, SRCCOPY);
+		// flipDC의 반전 비트맵을 TransparentBlt로 출력
+		TransparentBlt(hDC, x, y, dispBodyW, dispBodyH,
+			flipDC, 0, 0, 16, 28, RGB(255, 0, 255));
+		SelectObject(flipDC, flipOld);
+		DeleteObject(flipBmp);
+		DeleteDC(flipDC);
+
+		// 팔 반전 그리기
+		if (g_player.base_arm[armIdx] != NULL) {
+			HDC flipArmDC = CreateCompatibleDC(hDC);
+			HBITMAP flipArmBmp = CreateCompatibleBitmap(hDC, 16, 12);
+			HBITMAP flipArmOld = (HBITMAP)SelectObject(flipArmDC, flipArmBmp);
+			SelectObject(memDC, g_player.base_arm[armIdx]);
+			StretchBlt(flipArmDC, 15, 0, -16, 12, memDC, 0, 0, 16, 12, SRCCOPY);
+			TransparentBlt(hDC, x, y + armOffY, dispArmW, dispArmH,
+				flipArmDC, 0, 0, 16, 12, RGB(255, 0, 255));
+			SelectObject(flipArmDC, flipArmOld);
+			DeleteObject(flipArmBmp);
+			DeleteDC(flipArmDC);
+		}
+	}
+	else {
+		// 몸 그리기
+		SelectObject(memDC, g_player.base[baseIdx]);
+		TransparentBlt(hDC, x, y, dispBodyW, dispBodyH,
+			memDC, 0, 0, 16, 28, RGB(255, 0, 255));
+
+		// 팔 그리기
+		if (g_player.base_arm[armIdx] != NULL) {
+			SelectObject(memDC, g_player.base_arm[armIdx]);
+			TransparentBlt(hDC, x, y + armOffY, dispArmW, dispArmH,
+				memDC, 0, 0, 16, 12, RGB(255, 0, 255));
+		}
 	}
 
-
-	int w = g_player.w;
-	int h = g_player.h;
-
-	HBRUSH bodyBrush = CreateSolidBrush(RGB(70, 110, 200));
-	HBRUSH oldB = (HBRUSH)SelectObject(hDC, bodyBrush);
-	HPEN bodyPen = CreatePen(PS_SOLID, 1, RGB(20, 40, 80));
-	HPEN oldP = (HPEN)SelectObject(hDC, bodyPen);
-	Rectangle(hDC, x, y + h / 3, x + w, y + h);
-
-	HBRUSH headBrush = CreateSolidBrush(RGB(245, 205, 165));
-	SelectObject(hDC, headBrush);
-	Ellipse(hDC, x + 4, y, x + w - 4, y + h / 2);
-
-	HBRUSH dirBrush = CreateSolidBrush(RGB(20, 20, 20));
-	SelectObject(hDC, dirBrush);
-	int cx = x + w / 2;
-	int cy = y + h / 4;
-	int dotR = 2;
-	int dotX = cx, dotY = cy;
-	switch (g_player.dir) {
-	case DIR_LEFT:  dotX = cx - 5; break;
-	case DIR_RIGHT: dotX = cx + 5; break;
-	case DIR_UP:    dotY = cy - 4; break;
-	case DIR_DOWN:  dotY = cy + 4; break;
-	}
-	Ellipse(hDC, dotX - dotR, dotY - dotR, dotX + dotR, dotY + dotR);
-
-	SelectObject(hDC, oldB);
-	SelectObject(hDC, oldP);
-	DeleteObject(bodyBrush);
-	DeleteObject(headBrush);
-	DeleteObject(dirBrush);
-	DeleteObject(bodyPen);
+	DeleteDC(memDC);
 }
 
 
@@ -653,9 +686,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		// 농장 배경 로드
 		hBitmap_farm = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\농장 배경.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
-		// 플레이어 스프라이트 시트 로드 (파일 없으면 NULL → 도형 fallback)
-
-		g_hBitmap_player = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\player.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		// 플레이어 이미지 로드 (아래 base/base_arm 로드에서 수행)
 
 		//씬/플레이어 초기화
 		g_currentScene = SCENE_FARM;
@@ -671,6 +702,25 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		g_sceneCooldown = 0;
 		// [플레이어] 업데이트 타이머 (약 33fps) — 플레이어 이동/트리거 체크
 		SetTimer(hWnd, 0001, 30, NULL);
+		// 플레이어 이미지 로드
+		g_player.base[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_정면1_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_정면2_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_정면3_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_옆면1_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[4] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_옆면2_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[5] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_옆면3_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[6] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_후면1_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[7] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_후면2_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[8] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_후면3_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_정면1_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_정면2_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_정면3_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_옆면1_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[4] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_옆면2_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[5] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_옆면3_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[6] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_후면1_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[7] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_후면2_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[8] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_후면3_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		hBitmap = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\570x540-Beach_Overview.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
