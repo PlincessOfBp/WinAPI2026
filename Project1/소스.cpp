@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <time.h>
 #include <string>
+#include <queue>
 #include <math.h>
 #include <wingdi.h>
 #pragma comment(lib, "msimg32.lib")
