@@ -64,7 +64,6 @@ struct Player {
 
 static Player g_player = { 380, 380, PLAYER_DISPLAY_W, PLAYER_DISPLAY_H, 4, DIR_DOWN, 0, 0, false };
 
-
 void 플레이어참고(HDC hDC, HBITMAP base[9], HBITMAP base_arm[])
 {
 
@@ -83,7 +82,6 @@ void 플레이어참고(HDC hDC, HBITMAP base[9], HBITMAP base_arm[])
 
 	DeleteDC(hFishDC);
 }
-
 
 // 입력 상태
 static bool g_keyLeft = false;
@@ -484,7 +482,7 @@ void DrawFishTriggerHint(HDC hDC) {
 
 
 
-// ── 낚시 단계 ──
+// 낚시 단계
 enum FishMovementType {
 	FISH_MOVE_RANDOM = 0,      // 기본: 랜덤하게 위아래로 움직임
 	FISH_MOVE_FAST_UP = 1,     // 위로 올라갈 때 빠르게
@@ -945,7 +943,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		}
 		}
 
-		플레이어참고(backDC, g_player.base, g_player.fishing_arm);
+		// 플레이어참고(backDC, g_player.base, g_player.fishing_arm);
 
 		// 화면으로 한 번에 복사 
 		BitBlt(hDC, 0, 0, CLIENT_W, CLIENT_H, backDC, 0, 0, SRCCOPY);
