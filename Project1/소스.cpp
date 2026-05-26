@@ -306,7 +306,7 @@ void UpdatePlayer() {
 }
 
 
-// ── 낚시 단계 ──
+// 낚시 단계
 enum FishingPhase {
 	FISHING_PHASE_NONE = 0,        // 낚시 안 함
 	FISHING_PHASE_CAST = 1,        // 캐스팅 애니메이션 (0→4 or 5→9)
