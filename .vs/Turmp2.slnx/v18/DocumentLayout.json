@@ -1,9 +1,9 @@
 {
   "Version": 1,
-  "WorkspaceRootPath": "C:\\Users\\user\\source\\repos\\Turmp2\\",
+  "WorkspaceRootPath": "C:\\Users\\PC\\source\\repos\\WinAPI2026\\",
   "Documents": [
     {
-      "AbsoluteMoniker": "D:0:0:{24AFC245-3A04-456D-B1EA-7E86CD2BE7F9}|Project1\\Project1.vcxproj|C:\\Users\\user\\source\\repos\\Turmp2\\Project1\\\uC18C\uC2A4.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "AbsoluteMoniker": "D:0:0:{24AFC245-3A04-456D-B1EA-7E86CD2BE7F9}|Project1\\Project1.vcxproj|C:\\Users\\PC\\source\\repos\\WinAPI2026\\Project1\\\uC18C\uC2A4.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
       "RelativeMoniker": "D:0:0:{24AFC245-3A04-456D-B1EA-7E86CD2BE7F9}|Project1\\Project1.vcxproj|solutionrelative:Project1\\\uC18C\uC2A4.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
     }
   ],
@@ -14,34 +14,24 @@
       "DocumentGroups": [
         {
           "DockedHeight": 251,
-          "SelectedChildIndex": 0,
+          "SelectedChildIndex": 1,
           "Children": [
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{1c4feeaa-4718-4aa9-859d-94ce25d182ba}"
+            },
             {
               "$type": "Document",
               "DocumentIndex": 0,
               "Title": "\uC18C\uC2A4.cpp",
-              "DocumentMoniker": "C:\\Users\\user\\source\\repos\\Turmp2\\Project1\\\uC18C\uC2A4.cpp",
+              "DocumentMoniker": "C:\\Users\\PC\\source\\repos\\WinAPI2026\\Project1\\\uC18C\uC2A4.cpp",
               "RelativeDocumentMoniker": "Project1\\\uC18C\uC2A4.cpp",
-              "ToolTip": "C:\\Users\\user\\source\\repos\\Turmp2\\Project1\\\uC18C\uC2A4.cpp",
+              "ToolTip": "C:\\Users\\PC\\source\\repos\\WinAPI2026\\Project1\\\uC18C\uC2A4.cpp",
               "RelativeToolTip": "Project1\\\uC18C\uC2A4.cpp",
-              "ViewState": "AgIAADgBAAAAAAAAAAAAAEUBAAAEAAAAAAAAAA==",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAABEAAAAkAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
               "WhenOpened": "2026-05-11T14:54:46.837Z",
               "EditorCaption": ""
-            }
-          ]
-        },
-        {
-          "DockedHeight": 64,
-          "SelectedChildIndex": -1,
-          "Children": [
-            {
-              "$type": "Bookmark",
-              "Name": "ST:0:0:{34e76e81-ee4a-11d0-ae2e-00a0c90fffc3}"
-            },
-            {
-              "$type": "Bookmark",
-              "Name": "ST:0:0:{d78612c7-9962-4b83-95d9-268046dad23a}"
             }
           ]
         }
