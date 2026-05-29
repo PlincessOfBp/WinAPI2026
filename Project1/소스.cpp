@@ -111,6 +111,7 @@ static int g_sceneCooldown = 0;
 // 5: 낚시 가능 (왼쪽+아래, DIR_LEFT & DIR_DOWN)
 // 6: 낚시 가능 (오른쪽+아래, DIR_RIGHT & DIR_DOWN)
 // 7: 농장으로 이동 트리거
+// 8 - Tree1 9 - Tree2 10 - Tree3 나무들의 밑둥. 이동 불가능. 두 칸이 하나의 나무 밑둥.
 #define FISHING_MAP_COLS 40
 #define FISHING_MAP_ROWS 40
 #define FISHING_TILE_SCREEN 20  // 화면 기준 타일 크기 (px)
@@ -118,37 +119,37 @@ static int g_sceneCooldown = 0;
 static int g_fishingTileMap[FISHING_MAP_ROWS][FISHING_MAP_COLS] = {
 	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
 	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
-	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
-	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+	{ 10,10,0,0,9,9,0,0,0,0,0,0,9,9,0,0,0,10,10,0,0,0,0,0,10,10,0,0,0,0,0,0,0,10,10,0,0,0,0,0 },
+	{ 0,0,0,0,0,0,0,10,10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9,0 },
 	{ 7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
 	{ 7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
 	{ 7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+	{ 0,10,10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9,0,0 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,10,10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
 	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
-	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
-	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
-	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
-	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+	{ 0,0,0,0,0,0,0,0,0,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
 	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1 },
-	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1 },
+	{ 0,0,0,8,8,0,0,0,0,0,0,0,0,0,0,0,9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1 },
 	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1 },
-	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1 },
+	{ 9,9,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1 },
 	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1 },
 	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
 	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
 	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
 	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
-	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
-	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
-	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
-	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
-	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
-	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
-	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
-	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
-	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
-	{ 1,1,1,1,1,1,1,1,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,1,1,1,1,1,1,1,1 },
-	{ 1,1,1,1,1,1,1,1,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,1,1,1,1,1,1,1,1 },
-	{ 1,1,1,1,1,1,1,1,5,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,6,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,0,0,0,2,2,2,2,2,2,2,2,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,5,2,6,1,1,1,1,1,1,1,1,3,0,0,0,0,0,0,0,0,0,0,4,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,0,0,0,0,0,0,0,0,0,4,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,5,2,2,2,2,2,2,2,2,2,2,6,1,1,1,1,1,1,1,1 },
 	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
 	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
 	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
@@ -193,9 +194,29 @@ static bool FishingTileHasValue(int footX, int footY, int footW, int footH, int 
 	return false;
 }
 
-// 이동 불가(1) 타일과 충돌하는지 검사
+// 이동 불가(1) 및 나무 밑둥(8,9,10) 타일과 충돌하는지 검사
 static bool IsBlockedInFishing(int footX, int footY, int footW, int footH) {
-	return FishingTileHasValue(footX, footY, footW, footH, 1);
+	int colL = ScreenToTileCol(footX);
+	int colR = ScreenToTileCol(footX + footW - 1);
+	int rowT = ScreenToTileRow(footY);
+	int rowB = ScreenToTileRow(footY + footH - 1);
+
+	if (colL < 0) colL = 0;
+	if (rowT < 0) rowT = 0;
+	if (colR >= FISHING_MAP_COLS) colR = FISHING_MAP_COLS - 1;
+	if (rowB >= FISHING_MAP_ROWS) rowB = FISHING_MAP_ROWS - 1;
+
+	int r, c, tile;
+	for (r = rowT; r <= rowB; r++) {
+		for (c = colL; c <= colR; c++) {
+			tile = g_fishingTileMap[r][c];
+			if (tile == 1)  return true;
+			if (tile == 8)  return true;
+			if (tile == 9)  return true;
+			if (tile == 10) return true;
+		}
+	}
+	return false;
 }
 
 // 낚시 가능 여부 + 방향 검사
@@ -230,6 +251,68 @@ static bool IsInFishingArea(int footX, int footY, int footW, int footH, PlayerDi
 // 농장 이동 트리거(7) 타일에 닿았는지 검사
 static bool IsOnFarmTrigger(int footX, int footY, int footW, int footH) {
 	return FishingTileHasValue(footX, footY, footW, footH, 7);
+}
+
+// 나무 출력 크기 (원본 1280px 기준 → 화면 800px 비율: *800/1280 = *5/8)
+// Tree1: 118x140 → 74x88
+// Tree2:  56x72  → 35x45
+// Tree3:  50x62  → 32x39
+struct TreeInfo {
+	int tileVal;  // 타일맵 값 (8, 9, 10)
+	int bmpIdx;   // hBitmap_fishTree 인덱스 (0, 1, 2)
+	int srcW, srcH; // 원본 픽셀 크기
+	int dstW, dstH; // 화면 출력 크기
+};
+static TreeInfo g_treeInfos[3] = {
+	{ 8,  0, 118, 140,  74, 88 },
+	{ 9,  1,  56,  72,  35, 45 },
+	{ 10, 2,  50,  62,  32, 39 },
+};
+
+// drawBelow == true  : 플레이어 발보다 아래에 뿌리가 있는 나무 (플레이어 앞 → 나무가 플레이어를 가림)
+// drawBelow == false : 플레이어 발보다 위에 뿌리가 있는 나무  (플레이어 뒤 → 플레이어가 나무를 가림)
+static void DrawTrees(HDC hDC, HBITMAP hBitmap_fishTree[3], int playerFootY, bool drawBelow) {
+	HDC memDC = CreateCompatibleDC(hDC);
+	int r, c, t;
+	for (r = 0; r < FISHING_MAP_ROWS; r++) {
+		// 나무 뿌리의 화면 Y = 타일 행 아랫변
+		int treeFootY = (r + 1) * FISHING_TILE_SCREEN;
+
+		if (drawBelow) {
+			if (treeFootY <= playerFootY) continue; // 플레이어 뒤 나무는 건너뜀
+		}
+		else {
+			if (treeFootY > playerFootY) continue;  // 플레이어 앞 나무는 건너뜀
+		}
+
+		for (c = 0; c < FISHING_MAP_COLS - 1; c++) {
+			int tile = g_fishingTileMap[r][c];
+			if (tile < 8 || tile > 10) continue;
+			// 오른쪽 칸도 같은 값이어야 나무 한 그루
+			if (g_fishingTileMap[r][c + 1] != tile) continue;
+
+			// 해당 타일값의 TreeInfo 찾기
+			for (t = 0; t < 3; t++) {
+				if (g_treeInfos[t].tileVal != tile) continue;
+
+				if (hBitmap_fishTree[g_treeInfos[t].bmpIdx] == NULL) break;
+
+				SelectObject(memDC, hBitmap_fishTree[g_treeInfos[t].bmpIdx]);
+
+				// 나무 밑둥 영역 너비 = 타일 2칸 = FISHING_TILE_SCREEN * 2
+				// 중앙 정렬: 영역 왼쪽 끝 + (영역 너비 - 나무 출력 너비) / 2
+				int treeAreaW = FISHING_TILE_SCREEN * 2;
+				int treeX = c * FISHING_TILE_SCREEN + (treeAreaW - g_treeInfos[t].dstW) / 2;
+				int treeY = treeFootY - g_treeInfos[t].dstH;
+
+				TransparentBlt(hDC, treeX, treeY, g_treeInfos[t].dstW, g_treeInfos[t].dstH,
+					memDC, 0, 0, g_treeInfos[t].srcW, g_treeInfos[t].srcH, RGB(255, 0, 255));
+				break;
+			}
+			c++; // 오른쪽 칸은 같은 나무이므로 건너뜀
+		}
+	}
+	DeleteDC(memDC);
 }
 
 // 플레이어 한 프레임 업데이트
@@ -316,9 +399,10 @@ void UpdatePlayer() {
 	if (g_currentScene == SCENE_FARM && RectOverlap(g_player.x, g_player.y, g_player.w, g_player.h,
 		TRIGGER_TO_FISH_X, TRIGGER_TO_FISH_Y, TRIGGER_TO_FISH_W, TRIGGER_TO_FISH_H)) {
 		g_currentScene = SCENE_FISHING;
-		// 낚시터 입장 시 타일 7 중간 위치 (행4~6, 열0 → 화면 x=20, y=100 근처)
+		// 낚시터 출입구(타일 7, 행4~6 열0) 바로 오른쪽에 스폰
 		g_player.x = 1 * FISHING_TILE_SCREEN;
-		g_player.y = 5 * FISHING_TILE_SCREEN;
+		g_player.y = 5 * FISHING_TILE_SCREEN - g_player.h / 2;
+		g_player.dir = DIR_RIGHT;
 		g_sceneCooldown = 30;
 	}
 
@@ -330,8 +414,10 @@ void UpdatePlayer() {
 		int footH = g_player.h / 4;
 		if (IsOnFarmTrigger(g_player.x + footOffX, g_player.y + footOffY, footW, footH)) {
 			g_currentScene = SCENE_FARM;
-			g_player.x = TRIGGER_TO_FISH_X - g_player.w - 10;
+			// 농장 출입구(TRIGGER_TO_FISH) 바로 왼쪽에 스폰
+			g_player.x = TRIGGER_TO_FISH_X - g_player.w - 4;
 			g_player.y = TRIGGER_TO_FISH_Y + TRIGGER_TO_FISH_H / 2 - g_player.h / 2;
+			g_player.dir = DIR_LEFT;
 			g_sceneCooldown = 30;
 		}
 	}
@@ -705,7 +791,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	static bool isFishing; // 낚시 중인지 여부
 	static bool floatingGreenBar; // 초록 게이지가 위로 올라가는지. true면 올라가는 것.
 	static HBITMAP hBitmap_fishing[4]; //0 게이지 바탕 //1 초록 게이지 //2 게이지 안에서 움직이는 물고기 //3 물었다! 표시
-	static HBITMAP hBItmap_fishingGround; // 낚시 배경 이미지
+	static HBITMAP hBitmap_fishingGround; // 낚시 배경 이미지
+	static HBITMAP hBitmap_fishTree[3]; // 0-Tree1 1-Tree2 2-Tree3
 	static struct GreenBar greenBar; // 초록 게이지 바 정보
 	static struct TargetFish targetFish; // 게이지 안 속을 움직이는 물고기
 	static struct FishingGage fishingGage; // 낚시 외부 게이지 정보
@@ -762,6 +849,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		g_player.fishing_arm[8] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면4_16x14.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		g_player.fishing_arm[9] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면5_16x14.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
+		//낚시 로드
 		hBitmap = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\fishingmap_640x640.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		hBitmap_fishing[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\fishing_37x149.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
@@ -770,7 +858,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		hBitmap_fishing[3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\물었다_74x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		g_hBitmap_biteNotice = hBitmap_fishing[3]; // DrawPlayer에서 접근용
 
-		hBItmap_fishingGround = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\fishingmap_640x640.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		hBitmap_fishingGround = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\fishingmap_1280x1280.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		hBitmap_fishTree[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\Tree1_118x140.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		hBitmap_fishTree[1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\Tree2_56x72.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		hBitmap_fishTree[2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\Tree3_50x62.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		canFishing = false; // 낚시 가능 영역에 있을 때만 true로 설정됨
 		isFishing = false;
@@ -847,7 +938,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		case SCENE_FISHING:
 		{
 			// 낚시 씬 배경 
-			if (!hBItmap_fishingGround) {
+			if (!hBitmap_fishingGround) {
 				HBRUSH seaBrush = CreateSolidBrush(RGB(60, 110, 170));
 				RECT seaRect = { 0, 0, CLIENT_W, CLIENT_H };
 				FillRect(backDC, &seaRect, seaBrush);
@@ -855,10 +946,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			}
 			else {
 				HDC hFishingDC = CreateCompatibleDC(backDC);
-				HBITMAP hOldFarm = (HBITMAP)SelectObject(hFishingDC, hBItmap_fishingGround);
+				HBITMAP hOldFarm = (HBITMAP)SelectObject(hFishingDC, hBitmap_fishingGround);
 				SetStretchBltMode(backDC, HALFTONE);
 				StretchBlt(backDC, 0, 0, CLIENT_W, CLIENT_H,
-					hFishingDC, 0, 0, 640, 640,
+					hFishingDC, 0, 0, 1280, 1280,
 					SRCCOPY);
 				SelectObject(hFishingDC, hOldFarm);
 				DeleteDC(hFishingDC);
@@ -868,8 +959,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			// 낚시가능영역그리기(backDC);
 			// 농장으로이동영역그리기(backDC);
 
+			// 플레이어 발 Y 계산
+			int playerFootY = g_player.y + g_player.h * 3 / 4;
+
+			// 플레이어 뒤에 있는 나무 먼저 (플레이어가 나무 앞에 서있는 경우)
+			DrawTrees(backDC, hBitmap_fishTree, playerFootY, false);
+
 			// 플레이어 (스프라이트 or 도형)
 			DrawPlayer(backDC);
+
+			// 플레이어 앞에 있는 나무 나중에 (나무가 플레이어를 가리는 경우)
+			DrawTrees(backDC, hBitmap_fishTree, playerFootY, true);
 
 			SetBkMode(backDC, TRANSPARENT);
 			SetTextColor(backDC, RGB(255, 255, 255));
