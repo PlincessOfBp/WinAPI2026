@@ -3,17 +3,20 @@
 #include <stdlib.h>
 #include <time.h>
 #include <string>
+#include <queue>
+#include <vector>
 #include <math.h>
 #include <wingdi.h>
 #pragma comment(lib, "msimg32.lib")
-
+//test.case1
 HINSTANCE g_hInst;
 LPCTSTR lpszClass = L"Window Class";
 LPCTSTR lpszWindowName = L"windows program 1";
 
 enum GameScene {
 	SCENE_FARM = 0,    // 농장 화면 (조성현 담당)
-	SCENE_FISHING = 1  // 낚시 화면 (문선우 담당)
+	SCENE_FISHING = 1, // 낚시 화면 (문선우 담당)
+	SCENE_SHOP = 2     // 상점 화면 (집 문으로 진입)
 };
 static GameScene g_currentScene = SCENE_FARM;
 
@@ -798,7 +801,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	{
 	case WM_CREATE:
 		// 농장 배경 로드
-		hBitmap_farm = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\농장 배경.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		// (파일명: 농장배경.bmp - 공백 없음. 위치: Project1\이미지소스\농장\)
+		hBitmap_farm = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\농장배경.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+
+		// 채집물/집 비트맵 로드 (마젠타 투명)
+		g_hBitmap_trees  = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\Trees.bmp"),        IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_forest = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\forest asset.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_house  = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\House.bmp"),        IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+
+		// 농장 씬 시작 시 채집물 랜덤 스폰
+		InitHarvestables();
 
 		// 플레이어 이미지 로드 (아래 base/base_arm 로드에서 수행)
 
@@ -902,11 +914,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		{
 			// 농장 배경 그리기 -- 백버퍼에 축소 출력
 			if (hBitmap_farm != NULL) {
+				// 농장배경.bmp 원본 사이즈 (실측: 2290x1856)
+				const int FARM_BG_SRC_W = 2290;
+				const int FARM_BG_SRC_H = 1856;
 				HDC hFarmDC = CreateCompatibleDC(backDC);
 				HBITMAP hOldFarm = (HBITMAP)SelectObject(hFarmDC, hBitmap_farm);
 				SetStretchBltMode(backDC, HALFTONE);
 				StretchBlt(backDC, 0, 0, CLIENT_W, CLIENT_H,
-					hFarmDC, 0, 0, 2288, 1856,
+					hFarmDC, 0, 0, FARM_BG_SRC_W, FARM_BG_SRC_H,
 					SRCCOPY);
 				SelectObject(hFarmDC, hOldFarm);
 				DeleteDC(hFarmDC);
@@ -918,8 +933,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				DeleteObject(bg);
 			}
 
-			// 낚시터 트리거 안내 
-			DrawFishTriggerHint(backDC);
+			// (트리거 안내 박스/텍스트는 화면에 그리지 않음 - 충돌 판정만 동작)
+
+			// 집 (House.bmp)
+			DrawHouse(backDC);
+
+			// 채집물 (나무 / 숲 에셋) — SCENE_FARM 안에서만 그림
+			DrawHarvestables(backDC);
 
 			// 플레이어 (스프라이트 or 도형)
 			DrawPlayer(backDC);
@@ -927,7 +947,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			// 안내
 			SetBkMode(backDC, TRANSPARENT);
 			SetTextColor(backDC, RGB(255, 255, 255));
-			const wchar_t* info = L"[농장] 방향키/WASD 이동, 오른쪽 위 길로 가면 낚시터";
+			const wchar_t* info = L"[농장] 방향키/WASD 이동, 오른쪽 위 길→낚시터, 집 문→상점";
 			TextOut(backDC, 10, 10, info, (int)wcslen(info));
 			break;
 		}
@@ -973,10 +993,27 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			const wchar_t* hint = L"[낚시터] 좌클릭으로 낚시 시작";
 			TextOut(backDC, 10, 10, hint, (int)wcslen(hint));
 
-			//낚시 그리기 코드 
+			//낚시 그리기 코드
 			SelectObject(hMemDC, hBitmap);
 			if (g_fishingPhase == FISHING_PHASE_GAME)
 				FishingGameLogic(backDC, hBrush, oldBrush, hPen, oldPen, hBitmap_fishing, greenBar, targetFish, fishingGage);
+			break;
+		}
+
+		case SCENE_SHOP:
+		{
+			// 상점 씬: 임시 회색 배경 + 안내 텍스트
+			HBRUSH shopBg = CreateSolidBrush(RGB(120, 120, 120));
+			RECT r = { 0, 0, CLIENT_W, CLIENT_H };
+			FillRect(backDC, &r, shopBg);
+			DeleteObject(shopBg);
+
+			SetBkMode(backDC, TRANSPARENT);
+			SetTextColor(backDC, RGB(255, 255, 255));
+			const wchar_t* msg = L"상점 씬입니다";
+			TextOut(backDC, CLIENT_W / 2 - 60, CLIENT_H / 2 - 20, msg, (int)wcslen(msg));
+			const wchar_t* hint = L"(추후 상점 UI 구현 예정)";
+			TextOut(backDC, CLIENT_W / 2 - 90, CLIENT_H / 2 + 10, hint, (int)wcslen(hint));
 			break;
 		}
 		}
