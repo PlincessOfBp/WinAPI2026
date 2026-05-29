@@ -3,19 +3,520 @@
 #include <stdlib.h>
 #include <time.h>
 #include <string>
-#include <queue>
 #include <math.h>
-#include <wingdi.h> // 255 0 255 마젠타색을 투명색으로 사용하기 위해 필요
+#include <wingdi.h>
 #pragma comment(lib, "msimg32.lib")
-
-// 이미지소스\\Cursors.ko-KR << 필요한 부분만 잘라서 가공 필요!! 
-// 이미지소스\\낚시\\570x540-Beach_Overview
 
 HINSTANCE g_hInst;
 LPCTSTR lpszClass = L"Window Class";
 LPCTSTR lpszWindowName = L"windows program 1";
 
-// 물고기 움직임 유형 (유형마다 다른 아이템 드랍 예정, 아이템 드랍 구현 시 movementType을 키로 활용할 것)
+
+enum GameScene {
+	SCENE_FARM = 0,    // 농장 화면 (조성현 담당)
+	SCENE_FISHING = 1  // 낚시 화면 (문선우 담당)
+};
+static GameScene g_currentScene = SCENE_FARM;
+
+#define CLIENT_W 800
+#define CLIENT_H 800
+
+// 플레이어 바라보는 방향
+enum PlayerDir {
+	DIR_DOWN = 0,
+	DIR_UP = 1,
+	DIR_LEFT = 2,
+	DIR_RIGHT = 3
+};
+
+
+#define PLAYER_SPRITE_FRAME_W       16   // 시트에서 한 프레임 가로 픽셀
+#define PLAYER_SPRITE_FRAME_H       32   // 시트에서 한 프레임 세로 픽셀
+#define PLAYER_SPRITE_COLS           4   // 한 줄에 들어있는 걷기 프레임 수
+
+#define PLAYER_ROW_DOWN              0
+#define PLAYER_ROW_UP                1
+#define PLAYER_ROW_LEFT              2
+#define PLAYER_ROW_RIGHT             3
+
+#define PLAYER_DISPLAY_W            32
+#define PLAYER_DISPLAY_H            64
+
+#define PLAYER_ANIM_TICKS_PER_FRAME  6
+// 스프라이트 배경 투명색 (마젠타)
+#define PLAYER_SPRITE_TRANSPARENT   RGB(255, 0, 255)
+
+// 플레이어 구조체
+struct Player {
+	int x, y;          // 좌상단 좌표 (픽셀)
+	int w, h;          // 충돌/표시 크기
+	int speed;         // 한 프레임당 이동 거리 (픽셀)
+	PlayerDir dir;     // 마지막으로 바라본 방향
+	int frameIndex;    // 현재 애니메이션 프레임 (0 ~ COLS-1)
+	int frameTimer;    // 프레임 전환 카운터
+	bool isMoving;     // 이동 중 여부 (정지 시 idle 프레임)
+	// base 크기 16x28
+	HBITMAP base[9]; // 0~2 앞, 3~5 옆, 6~8뒤 01020102, 34353435, 68676867 순으로 걸을 때마다 애니메이션 진행. 멈춰있을 땐 각각 0,3,6 프레임을 사용. 옆면은 참고로 오른쪽 방향 보고있음. 왼쪽 볼 땐 좌우반전 필요.
+	// arm 크기 16x12
+	HBITMAP base_arm[9]; // base와 동일.
+	HBITMAP fishing_arm[10]; // 0~4 앞, 5~9 옆, 낚시 시작할 때 01234 순으로 애니메이션 진행. 이후 낚시 기다림 시간 중 4 고정. 물고기 물어서 낚시 게임 진행할 때엔 0101 반복. 옆면도 똑같이 낚시 시작 시 56789 애니메이션 진행. 낚시 기다릴 때 9 고정. 물고기가 물어서 낚시 게임 진행중일 때 5656 애니메이션 반복. 오른쪽 방향 보고있음. 왼쪽 볼 땐 좌우반전 필요.
+};
+
+static Player g_player = { 380, 380, PLAYER_DISPLAY_W, PLAYER_DISPLAY_H, 4, DIR_DOWN, 0, 0, false };
+
+
+void 플레이어참고(HDC hDC, HBITMAP base[9], HBITMAP base_arm[])
+{
+
+	HDC hFishDC = CreateCompatibleDC(hDC);
+	// 몸 베이스
+	SelectObject(hFishDC, base[3]);
+	TransparentBlt(hDC, 0, 0, 16, 28, hFishDC, 0, 0, 16, 28, RGB(255, 0, 255));
+
+	//정면 팔
+	// SelectObject(hFishDC, base_arm[4]);
+	// TransparentBlt(hDC, 0, 4, 16, 17, hFishDC, 0, 0, 16, 17, RGB(255, 0, 255));
+
+	// 옆면 팔
+	SelectObject(hFishDC, base_arm[9]);
+	TransparentBlt(hDC, 1, 5, 16, 14, hFishDC, 0, 0, 16, 14, RGB(255, 0, 255));
+
+	DeleteDC(hFishDC);
+}
+
+// 입력 상태
+static bool g_keyLeft = false;
+static bool g_keyRight = false;
+static bool g_keyUp = false;
+static bool g_keyDown = false;
+
+// 농장 → 낚시 트리거 (오른쪽 위, 빨간 지붕 집 옆쪽)
+// 사용자가 표시한 빨간 동그라미 위치에 맞춰 조정.
+#define TRIGGER_TO_FISH_X   720
+#define TRIGGER_TO_FISH_Y   200
+#define TRIGGER_TO_FISH_W    80
+#define TRIGGER_TO_FISH_H    80
+
+// 씬 전환 직후 같은 트리거에서 핑퐁 방지용 쿨다운
+static int g_sceneCooldown = 0;
+
+// 낚시터 타일맵 
+// 타일 1개 = 16x16px, 맵 40x40타일 = 640x640px
+// 화면 800x800으로 StretchBlt → 화면 기준 타일 1개 = 20x20px
+// 0: 이동 가능
+// 1: 이동 불가
+// 2: 낚시 가능 (아래, DIR_DOWN)
+// 3: 낚시 가능 (왼쪽, DIR_LEFT)
+// 4: 낚시 가능 (오른쪽, DIR_RIGHT)
+// 5: 낚시 가능 (왼쪽+아래, DIR_LEFT & DIR_DOWN)
+// 6: 낚시 가능 (오른쪽+아래, DIR_RIGHT & DIR_DOWN)
+// 7: 농장으로 이동 트리거
+#define FISHING_MAP_COLS 40
+#define FISHING_MAP_ROWS 40
+#define FISHING_TILE_SCREEN 20  // 화면 기준 타일 크기 (px)
+
+static int g_fishingTileMap[FISHING_MAP_ROWS][FISHING_MAP_COLS] = {
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+	{ 7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+	{ 7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+	{ 7,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,0,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,0,4,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,5,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,6,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+	{ 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1 },
+};
+
+// 두 사각형 겹침 검사 (농장 씬 트리거에서 사용)
+static bool RectOverlap(int ax, int ay, int aw, int ah,
+	int bx, int by, int bw, int bh) {
+	return (ax + aw > bx) && (ax < bx + bw) &&
+		(ay + ah > by) && (ay < by + bh);
+}
+
+// 화면 좌표 → 타일 인덱스 변환
+static int ScreenToTileCol(int screenX) { return screenX / FISHING_TILE_SCREEN; }
+static int ScreenToTileRow(int screenY) { return screenY / FISHING_TILE_SCREEN; }
+
+// 발 영역이 닿는 타일들 중 특정 값이 있는지 검사
+// footX, footY, footW, footH: 화면 픽셀 기준 발 영역
+static bool FishingTileHasValue(int footX, int footY, int footW, int footH, int tileVal) {
+	int colL = ScreenToTileCol(footX);
+	int colR = ScreenToTileCol(footX + footW - 1);
+	int rowT = ScreenToTileRow(footY);
+	int rowB = ScreenToTileRow(footY + footH - 1);
+
+	// 범위 클램프
+	if (colL < 0) colL = 0;
+	if (rowT < 0) rowT = 0;
+	if (colR >= FISHING_MAP_COLS) colR = FISHING_MAP_COLS - 1;
+	if (rowB >= FISHING_MAP_ROWS) rowB = FISHING_MAP_ROWS - 1;
+
+	int r, c;
+	for (r = rowT; r <= rowB; r++) {
+		for (c = colL; c <= colR; c++) {
+			if (g_fishingTileMap[r][c] == tileVal)
+				return true;
+		}
+	}
+	return false;
+}
+
+// 이동 불가(1) 타일과 충돌하는지 검사
+static bool IsBlockedInFishing(int footX, int footY, int footW, int footH) {
+	return FishingTileHasValue(footX, footY, footW, footH, 1);
+}
+
+// 낚시 가능 여부 + 방향 검사
+static bool IsInFishingArea(int footX, int footY, int footW, int footH, PlayerDir dir) {
+	int colL = ScreenToTileCol(footX);
+	int colR = ScreenToTileCol(footX + footW - 1);
+	int rowT = ScreenToTileRow(footY);
+	int rowB = ScreenToTileRow(footY + footH - 1);
+
+	if (colL < 0) colL = 0;
+	if (rowT < 0) rowT = 0;
+	if (colR >= FISHING_MAP_COLS) colR = FISHING_MAP_COLS - 1;
+	if (rowB >= FISHING_MAP_ROWS) rowB = FISHING_MAP_ROWS - 1;
+
+	int r, c, tile;
+	for (r = rowT; r <= rowB; r++) {
+		for (c = colL; c <= colR; c++) {
+			tile = g_fishingTileMap[r][c];
+			// 2: 아래, 3: 왼, 4: 오른, 5: 왼&아래, 6: 오른&아래
+			if (tile == 2 && dir == DIR_DOWN)  return true;
+			if (tile == 3 && dir == DIR_LEFT)  return true;
+			if (tile == 4 && dir == DIR_RIGHT) return true;
+			if (tile == 5 && dir == DIR_LEFT)  return true;
+			if (tile == 5 && dir == DIR_DOWN)  return true;
+			if (tile == 6 && dir == DIR_RIGHT) return true;
+			if (tile == 6 && dir == DIR_DOWN)  return true;
+		}
+	}
+	return false;
+}
+
+// 농장 이동 트리거(7) 타일에 닿았는지 검사
+static bool IsOnFarmTrigger(int footX, int footY, int footW, int footH) {
+	return FishingTileHasValue(footX, footY, footW, footH, 7);
+}
+
+// 플레이어 한 프레임 업데이트
+void UpdatePlayer() {
+	int dx = 0, dy = 0;
+	if (g_keyLeft)  dx -= g_player.speed;
+	if (g_keyRight) dx += g_player.speed;
+	if (g_keyUp)    dy -= g_player.speed;
+	if (g_keyDown)  dy += g_player.speed;
+
+	// 8방향 이동 시 대각선 속도 보정 
+	if (dx != 0 && dy != 0) {
+		dx = (dx * 7) / 10;
+		dy = (dy * 7) / 10;
+	}
+
+	// 낚시터 씬: 이동 불가 영역 충돌 처리
+	// 발 영역: 플레이어 하단 중앙 (좌우 여백 w/4, 상단 h*3/4 아래)
+	if (g_currentScene == SCENE_FISHING) {
+		int footOffX = g_player.w / 4;
+		int footOffY = g_player.h * 3 / 4;
+		int footW = g_player.w / 2;
+		int footH = g_player.h / 4;
+
+		// X축 먼저 시도
+		int nextX = g_player.x + dx;
+		if (IsBlockedInFishing(nextX + footOffX, g_player.y + footOffY, footW, footH)) {
+			nextX = g_player.x; // X 이동 취소
+			dx = 0;
+		}
+		// Y축 시도
+		int nextY = g_player.y + dy;
+		if (IsBlockedInFishing(nextX + footOffX, nextY + footOffY, footW, footH)) {
+			nextY = g_player.y; // Y 이동 취소
+			dy = 0;
+		}
+		g_player.x = nextX;
+		g_player.y = nextY;
+	}
+	else {
+		g_player.x += dx;
+		g_player.y += dy;
+	}
+
+	// 마지막으로 바라본 방향 갱신 (좌우 우선)
+	if (dx < 0)      g_player.dir = DIR_LEFT;
+	else if (dx > 0) g_player.dir = DIR_RIGHT;
+	else if (dy < 0) g_player.dir = DIR_UP;
+	else if (dy > 0) g_player.dir = DIR_DOWN;
+
+	// 애니메이션 프레임 갱신
+	// 각 방향 걷기 시퀀스: 정면 0,1,0,2 / 옆면 3,4,3,5 / 후면 6,8,6,7
+	static int animSeqFront[4] = { 0, 1, 0, 2 };
+	static int animSeqSide[4] = { 3, 4, 3, 5 };
+	static int animSeqBack[4] = { 6, 8, 6, 7 };
+
+	bool moving = (dx != 0 || dy != 0);
+	g_player.isMoving = moving;
+	if (moving) {
+		g_player.frameTimer++;
+		if (g_player.frameTimer >= PLAYER_ANIM_TICKS_PER_FRAME) {
+			g_player.frameTimer = 0;
+			g_player.frameIndex = (g_player.frameIndex + 1) % 4;
+		}
+	}
+	else {
+		g_player.frameIndex = 0;  // 정지 시 첫 프레임(idle)
+		g_player.frameTimer = 0;
+	}
+
+	// 화면 경계 충돌 처리 
+	if (g_player.x < 0) g_player.x = 0;
+	if (g_player.y < 0) g_player.y = 0;
+	if (g_player.x + g_player.w > CLIENT_W) g_player.x = CLIENT_W - g_player.w;
+	if (g_player.y + g_player.h > CLIENT_H) g_player.y = CLIENT_H - g_player.h;
+
+	// 씬 전환 쿨다운
+	if (g_sceneCooldown > 0) {
+		g_sceneCooldown--;
+		return;
+	}
+
+	// 낚시터 가는 길에 닿으면 SCENE_FISHING으로 전환
+	if (g_currentScene == SCENE_FARM && RectOverlap(g_player.x, g_player.y, g_player.w, g_player.h,
+		TRIGGER_TO_FISH_X, TRIGGER_TO_FISH_Y, TRIGGER_TO_FISH_W, TRIGGER_TO_FISH_H)) {
+		g_currentScene = SCENE_FISHING;
+		// 낚시터 입장 시 타일 7 중간 위치 (행4~6, 열0 → 화면 x=20, y=100 근처)
+		g_player.x = 1 * FISHING_TILE_SCREEN;
+		g_player.y = 5 * FISHING_TILE_SCREEN;
+		g_sceneCooldown = 30;
+	}
+
+	// 농장 가는 길에 닿으면 SCENE_FARM으로 전환 (타일 7 기반)
+	if (g_currentScene == SCENE_FISHING) {
+		int footOffX = g_player.w / 4;
+		int footOffY = g_player.h * 3 / 4;
+		int footW = g_player.w / 2;
+		int footH = g_player.h / 4;
+		if (IsOnFarmTrigger(g_player.x + footOffX, g_player.y + footOffY, footW, footH)) {
+			g_currentScene = SCENE_FARM;
+			g_player.x = TRIGGER_TO_FISH_X - g_player.w - 10;
+			g_player.y = TRIGGER_TO_FISH_Y + TRIGGER_TO_FISH_H / 2 - g_player.h / 2;
+			g_sceneCooldown = 30;
+		}
+	}
+}
+
+
+// 낚시 단계
+enum FishingPhase {
+	FISHING_PHASE_NONE = 0,        // 낚시 안 함
+	FISHING_PHASE_CAST = 1,        // 캐스팅 애니메이션 (0→4 or 5→9)
+	FISHING_PHASE_WAIT = 2,        // 물고기 기다리는 중 (마지막 프레임 고정)
+	FISHING_PHASE_BITE_NOTICE = 3, // 물었다! 표시 (~1초)
+	FISHING_PHASE_GAME = 4         // 낚시 미니게임 진행
+};
+static FishingPhase g_fishingPhase = FISHING_PHASE_NONE;
+
+// 물고기 기다림 시간 범위 (단위: 타이머 틱, 타이머 2002는 100ms마다 발생)
+// 5초 = 50틱, 10초 = 100틱. 외부에서 조정 가능.
+static int g_fishWaitMin = 50;  // 최소 기다림 틱 수
+static int g_fishWaitMax = 100; // 최대 기다림 틱 수
+static int g_fishWaitTimer = 0; // 현재 기다림 카운터
+static int g_fishWaitTarget = 0; // 이번에 기다릴 틱 수 (랜덤)
+
+// 캐스팅 애니메이션 상태
+static int g_castFrameIdx = 0;   // 현재 캐스팅 진행 프레임 (0~4)
+static int g_castFrameTimer = 0; // 프레임 유지 카운터
+#define CAST_TICKS_PER_FRAME 4   // 캐스팅 프레임 하나당 유지할 타이머 틱 수
+
+// 물었다! 표시 타이머 (100ms 타이머 기준, 10틱 = 1초)
+static int g_biteNoticeTimer = 0;
+#define BITE_NOTICE_TICKS 10     // 물었다! 표시 유지 틱 수 (1초)
+
+// 낚시 중 팔 인덱스 (DrawPlayer에서 사용)
+static int g_fishingArmIdx = 0;
+
+// 낚시 게임 중 팔 애니메이션 (0101 or 5656 반복)
+static int g_fishGameArmTimer = 0;
+static int g_fishGameArmFrame = 0; // 0 or 1 (앞면: 0,1 / 옆면: 5,6 중 선택용)
+#define FISH_GAME_ARM_TICKS 5    // 낚시 게임 중 팔 프레임 전환 속도
+
+// 물었다! 비트맵 (DrawPlayer에서 접근하기 위해 전역으로 관리)
+static HBITMAP g_hBitmap_biteNotice = NULL;
+
+// 비트맵을 좌우반전하여 TransparentBlt로 출력하는 헬퍼 함수
+// srcW, srcH: 원본 픽셀 크기 / dstW, dstH: 화면 출력 크기
+static void DrawFlipped(HDC hDC, HDC memDC, HBITMAP bmp,
+	int dstX, int dstY, int dstW, int dstH,
+	int srcW, int srcH) {
+	HDC flipDC = CreateCompatibleDC(hDC);
+	HBITMAP flipBmp = CreateCompatibleBitmap(hDC, srcW, srcH);
+	HBITMAP flipOld = (HBITMAP)SelectObject(flipDC, flipBmp);
+	SelectObject(memDC, bmp);
+	StretchBlt(flipDC, srcW - 1, 0, -srcW, srcH, memDC, 0, 0, srcW, srcH, SRCCOPY);
+	TransparentBlt(hDC, dstX, dstY, dstW, dstH, flipDC, 0, 0, srcW, srcH, RGB(255, 0, 255));
+	SelectObject(flipDC, flipOld);
+	DeleteObject(flipBmp);
+	DeleteDC(flipDC);
+}
+
+void DrawPlayer(HDC hDC) {
+	int x = g_player.x;
+	int y = g_player.y;
+
+	// 방향별 걷기 시퀀스
+	static int animSeqFront[4] = { 0, 1, 0, 2 };
+	static int animSeqSide[4] = { 3, 4, 3, 5 };
+	static int animSeqBack[4] = { 6, 8, 6, 7 };
+
+	// 몸 인덱스 결정
+	int baseIdx = 0;
+	if (g_fishingPhase != FISHING_PHASE_NONE) {
+		// 낚시 중: 정지 프레임 고정 (앞면=0, 옆면=3, 후면=6)
+		if (g_player.dir == DIR_DOWN)       baseIdx = 0;
+		else if (g_player.dir == DIR_UP)    baseIdx = 6;
+		else                                baseIdx = 3;
+	}
+	else {
+		if (g_player.dir == DIR_DOWN)       baseIdx = animSeqFront[g_player.frameIndex];
+		else if (g_player.dir == DIR_UP)    baseIdx = animSeqBack[g_player.frameIndex];
+		else                                baseIdx = animSeqSide[g_player.frameIndex];
+	}
+
+	if (g_player.base[baseIdx] == NULL)
+		return;
+
+	HDC memDC = CreateCompatibleDC(hDC);
+
+	int dispBodyW = 32; int dispBodyH = 56;
+	int dispArmW = 32; int dispArmH = 24;
+	int armOffY = 20; // 원본과 동일
+
+	// 낚시 팔 크기 (임시) 
+	int dispFArmFrontW = 32; int dispFArmFrontH = 34; // 앞면 낚시팔 (16x17 → 2배)
+	int dispFArmSideW = 32; int dispFArmSideH = 28; // 옆면 낚시팔 (16x14 → 2배)
+	// 낚시 팔 X 오프셋 
+	int fishArmOffX = 0;
+
+	bool isFishingState = (g_fishingPhase != FISHING_PHASE_NONE);
+
+	if (g_player.dir == DIR_LEFT) {
+		// 몸 (좌우반전)
+		DrawFlipped(hDC, memDC, g_player.base[baseIdx],
+			x, y, dispBodyW, dispBodyH, 16, 28);
+
+		if (isFishingState) {
+			// 낚시 팔 (옆면, 좌우반전)
+			if (g_player.fishing_arm[g_fishingArmIdx] != NULL) {
+				DrawFlipped(hDC, memDC, g_player.fishing_arm[g_fishingArmIdx],
+					x + fishArmOffX - 2, y + armOffY - 10, dispFArmSideW, dispFArmSideH, 16, 14);
+			}
+		}
+		else {
+			// 일반 팔 — 원본과 동일 (좌우반전)
+			if (g_player.base_arm[baseIdx] != NULL) {
+				DrawFlipped(hDC, memDC, g_player.base_arm[baseIdx],
+					x, y + armOffY, dispArmW, dispArmH, 16, 12);
+			}
+		}
+	}
+	else {
+		// 몸
+		SelectObject(memDC, g_player.base[baseIdx]);
+		TransparentBlt(hDC, x, y, dispBodyW, dispBodyH,
+			memDC, 0, 0, 16, 28, RGB(255, 0, 255));
+
+		if (isFishingState) {
+			// 낚시 팔
+			if (g_player.fishing_arm[g_fishingArmIdx] != NULL) {
+				SelectObject(memDC, g_player.fishing_arm[g_fishingArmIdx]);
+				if (g_player.dir == DIR_DOWN) {
+					TransparentBlt(hDC, x + fishArmOffX, y + armOffY - 10, dispFArmFrontW, dispFArmFrontH,
+						memDC, 0, 0, 16, 17, RGB(255, 0, 255));
+				}
+				else {
+					TransparentBlt(hDC, x + fishArmOffX + 2, y + armOffY - 10, dispFArmSideW, dispFArmSideH,
+						memDC, 0, 0, 16, 14, RGB(255, 0, 255));
+				}
+			}
+		}
+		else {
+			// 일반 팔 — 원본과 동일
+			if (g_player.base_arm[baseIdx] != NULL) {
+				SelectObject(memDC, g_player.base_arm[baseIdx]);
+				TransparentBlt(hDC, x, y + armOffY, dispArmW, dispArmH,
+					memDC, 0, 0, 16, 12, RGB(255, 0, 255));
+			}
+		}
+	}
+
+	// 물었다! 표시 (머리 위 약 1초간)
+	if (g_fishingPhase == FISHING_PHASE_BITE_NOTICE) {
+		if (g_hBitmap_biteNotice != NULL) {
+			SelectObject(memDC, g_hBitmap_biteNotice);
+			// 원본 74x28, 머리 위에 표시 (x 중앙 정렬, y - 30)
+			TransparentBlt(hDC, x - 21, y - 30, 74, 28,
+				memDC, 0, 0, 74, 28, RGB(255, 0, 255));
+		}
+	}
+
+	DeleteDC(memDC);
+}
+
+
+void DrawFishTriggerHint(HDC hDC) {
+	// 반투명 느낌의 외곽선만 표시
+	HPEN p = CreatePen(PS_DOT, 2, RGB(255, 255, 0));
+	HPEN op = (HPEN)SelectObject(hDC, p);
+	HBRUSH nb = (HBRUSH)GetStockObject(NULL_BRUSH);
+	HBRUSH ob = (HBRUSH)SelectObject(hDC, nb);
+	Rectangle(hDC, TRIGGER_TO_FISH_X, TRIGGER_TO_FISH_Y,
+		TRIGGER_TO_FISH_X + TRIGGER_TO_FISH_W,
+		TRIGGER_TO_FISH_Y + TRIGGER_TO_FISH_H);
+	SelectObject(hDC, op);
+	SelectObject(hDC, ob);
+	DeleteObject(p);
+
+	SetBkMode(hDC, TRANSPARENT);
+	SetTextColor(hDC, RGB(255, 255, 220));
+	const wchar_t* hint = L"→ 낚시터";
+	TextOut(hDC, TRIGGER_TO_FISH_X + 10, TRIGGER_TO_FISH_Y + 30, hint, (int)wcslen(hint));
+}
+
+
+
+// 낚시 단계
 enum FishMovementType {
 	FISH_MOVE_RANDOM = 0,      // 기본: 랜덤하게 위아래로 움직임
 	FISH_MOVE_FAST_UP = 1,     // 위로 올라갈 때 빠르게
@@ -133,13 +634,13 @@ void UpdateFishMovement(struct TargetFish& fish) {
 	}
 
 	// 범위 제한
-	if (fish.y < FISH_MIN_Y) { 
-		fish.y = FISH_MIN_Y; 
-		fish.moveDirY = 1; 
+	if (fish.y < FISH_MIN_Y) {
+		fish.y = FISH_MIN_Y;
+		fish.moveDirY = 1;
 	}
-	if (fish.y > FISH_MAX_Y) { 
-		fish.y = FISH_MAX_Y; 
-		fish.moveDirY = -1; 
+	if (fish.y > FISH_MAX_Y) {
+		fish.y = FISH_MAX_Y;
+		fish.moveDirY = -1;
 	}
 }
 
@@ -174,12 +675,9 @@ void FishingGameLogic(HDC hDC, HBRUSH hBrush, HBRUSH oldBrush, HPEN hPen, HPEN o
 	oldPen = (HPEN)SelectObject(hDC, hPen);
 	hBrush = CreateSolidBrush(RGB(255, 0, 0));
 	oldBrush = (HBRUSH)SelectObject(hDC, hBrush);
-	// 원본 Rectangle 좌표계: left=fishingGage.width, top=fishingGage.height, right=fishingGage.x+fishingGage.width, bottom=fishingGage.y+fishingGage.height
-	// 전체 게이지 높이 = bottom - top = (fishingGage.y + fishingGage.height) - fishingGage.height = fishingGage.y
-	// 아래(bottom)는 고정, 위(filledTop)가 current/maxVal 비율에 따라 움직임
-	// current == maxVal 이면 filledTop == top (꽉 참), current == 0 이면 filledTop == bottom (빔)
+
 	int gageTop = fishingGage.height;                          // 전체 게이지의 top 좌표
-	int gageBottom = fishingGage.y + fishingGage.height;          // 전체 게이지의 bottom 좌표 (고정)
+	int gageBottom = fishingGage.y + fishingGage.height;          // 전체 게이지의 bottom 좌표 
 	int gageTotalH = gageBottom - gageTop;                        // 전체 게이지 높이 = fishingGage.y
 	int filledTop = gageBottom - (gageTotalH * fishingGage.current / fishingGage.maxVal);
 	Rectangle(hDC, fishingGage.width, filledTop, fishingGage.x + fishingGage.width, gageBottom);
@@ -200,10 +698,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	static HBITMAP hBitmap;
 	static RECT rc;
 
+	// 농장 배경 (조성현 담당)
+	static HBITMAP hBitmap_farm; // 농장 풍경 배경 이미지
+
 	static bool canFishing; // 특정 영역에서 낚시 가능 여부
 	static bool isFishing; // 낚시 중인지 여부
 	static bool floatingGreenBar; // 초록 게이지가 위로 올라가는지. true면 올라가는 것.
 	static HBITMAP hBitmap_fishing[4]; //0 게이지 바탕 //1 초록 게이지 //2 게이지 안에서 움직이는 물고기 //3 물었다! 표시
+	static HBITMAP hBItmap_fishingGround; // 낚시 배경 이미지
 	static struct GreenBar greenBar; // 초록 게이지 바 정보
 	static struct TargetFish targetFish; // 게이지 안 속을 움직이는 물고기
 	static struct FishingGage fishingGage; // 낚시 외부 게이지 정보
@@ -211,14 +713,66 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	switch (iMessage)
 	{
 	case WM_CREATE:
-		hBitmap = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\570x540-Beach_Overview.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		// 농장 배경 로드
+		hBitmap_farm = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\농장 배경.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+
+		// 플레이어 이미지 로드 (아래 base/base_arm 로드에서 수행)
+
+		//씬/플레이어 초기화
+		g_currentScene = SCENE_FARM;
+		g_player.x = 380; g_player.y = 380;
+		g_player.w = PLAYER_DISPLAY_W;
+		g_player.h = PLAYER_DISPLAY_H;
+		g_player.speed = 4;
+		g_player.dir = DIR_DOWN;
+		g_player.frameIndex = 0;
+		g_player.frameTimer = 0;
+		g_player.isMoving = false;
+		g_keyLeft = g_keyRight = g_keyUp = g_keyDown = false;
+		g_sceneCooldown = 0;
+		// [플레이어] 업데이트 타이머 (약 33fps) — 플레이어 이동/트리거 체크
+		SetTimer(hWnd, 0001, 30, NULL);
+		// 플레이어 이미지 로드
+		g_player.base[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_정면1_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_정면2_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_정면3_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_옆면1_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[4] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_옆면2_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[5] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_옆면3_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[6] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_후면1_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[7] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_후면2_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base[8] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_base_후면3_16x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_정면1_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_정면2_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_정면3_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_옆면1_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[4] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_옆면2_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[5] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_옆면3_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[6] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_후면1_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[7] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_후면2_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.base_arm[8] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_후면3_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_앞면1_16x17.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_앞면2_16x17.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_앞면3_16x17.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_앞면4_16x17.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[4] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_앞면5_16x17.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[5] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면1_16x14.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[6] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면2_16x14.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[7] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면3_16x14.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[8] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면4_16x14.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[9] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면5_16x14.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+
+		hBitmap = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\fishingmap_640x640.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		hBitmap_fishing[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\fishing_37x149.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		hBitmap_fishing[1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\green_10x10.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION); // 3배정도 길게 늘려서 사용. 10x50 정도의 크기.
 		hBitmap_fishing[2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\fish_39x20.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION); // 19x20 씩 잘라서 사용해야 함. 19x20, 1픽셀 띄우고 다시 19x20 이렇게.
 		hBitmap_fishing[3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\물었다_74x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_biteNotice = hBitmap_fishing[3]; // DrawPlayer에서 접근용
 
-		canFishing = true; // 개발용, 실제로는 특정 영역에서만 true로 설정해야 함
+		hBItmap_fishingGround = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\fishingmap_640x640.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+
+		canFishing = false; // 낚시 가능 영역에 있을 때만 true로 설정됨
 		isFishing = false;
 		floatingGreenBar = false;
 		greenBar.width = 10;
@@ -244,27 +798,131 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		break;
 
 	case WM_PAINT:
+	{
 		hDC = BeginPaint(hWnd, &ps);
-		hMemDC = CreateCompatibleDC(hDC);
-		SelectObject(hMemDC, hBitmap);
 
-		if (isFishing)
-			FishingGameLogic(hDC, hBrush, oldBrush, hPen, oldPen, hBitmap_fishing, greenBar, targetFish, fishingGage);
 
+		HDC backDC = CreateCompatibleDC(hDC);
+		HBITMAP backBmp = CreateCompatibleBitmap(hDC, CLIENT_W, CLIENT_H);
+		HBITMAP oldBackBmp = (HBITMAP)SelectObject(backDC, backBmp);
+
+		// 낚시 비트맵 select용
+		hMemDC = CreateCompatibleDC(backDC);
+
+		switch (g_currentScene) {
+		case SCENE_FARM:
+		{
+			// 농장 배경 그리기 -- 백버퍼에 축소 출력
+			if (hBitmap_farm != NULL) {
+				HDC hFarmDC = CreateCompatibleDC(backDC);
+				HBITMAP hOldFarm = (HBITMAP)SelectObject(hFarmDC, hBitmap_farm);
+				SetStretchBltMode(backDC, HALFTONE);
+				StretchBlt(backDC, 0, 0, CLIENT_W, CLIENT_H,
+					hFarmDC, 0, 0, 2288, 1856,
+					SRCCOPY);
+				SelectObject(hFarmDC, hOldFarm);
+				DeleteDC(hFarmDC);
+			}
+			else {
+				HBRUSH bg = CreateSolidBrush(RGB(150, 200, 130));
+				RECT r = { 0, 0, CLIENT_W, CLIENT_H };
+				FillRect(backDC, &r, bg);
+				DeleteObject(bg);
+			}
+
+			// 낚시터 트리거 안내 
+			DrawFishTriggerHint(backDC);
+
+			// 플레이어 (스프라이트 or 도형)
+			DrawPlayer(backDC);
+
+			// 안내
+			SetBkMode(backDC, TRANSPARENT);
+			SetTextColor(backDC, RGB(255, 255, 255));
+			const wchar_t* info = L"[농장] 방향키/WASD 이동, 오른쪽 위 길로 가면 낚시터";
+			TextOut(backDC, 10, 10, info, (int)wcslen(info));
+			break;
+		}
+
+		case SCENE_FISHING:
+		{
+			// 낚시 씬 배경 
+			if (!hBItmap_fishingGround) {
+				HBRUSH seaBrush = CreateSolidBrush(RGB(60, 110, 170));
+				RECT seaRect = { 0, 0, CLIENT_W, CLIENT_H };
+				FillRect(backDC, &seaRect, seaBrush);
+				DeleteObject(seaBrush);
+			}
+			else {
+				HDC hFishingDC = CreateCompatibleDC(backDC);
+				HBITMAP hOldFarm = (HBITMAP)SelectObject(hFishingDC, hBItmap_fishingGround);
+				SetStretchBltMode(backDC, HALFTONE);
+				StretchBlt(backDC, 0, 0, CLIENT_W, CLIENT_H,
+					hFishingDC, 0, 0, 640, 640,
+					SRCCOPY);
+				SelectObject(hFishingDC, hOldFarm);
+				DeleteDC(hFishingDC);
+			}
+
+			// 낚시터플레이어이동못하는영역그리기(backDC);
+			// 낚시가능영역그리기(backDC);
+			// 농장으로이동영역그리기(backDC);
+
+			// 플레이어 (스프라이트 or 도형)
+			DrawPlayer(backDC);
+
+			SetBkMode(backDC, TRANSPARENT);
+			SetTextColor(backDC, RGB(255, 255, 255));
+			const wchar_t* hint = L"[낚시터] 좌클릭으로 낚시 시작";
+			TextOut(backDC, 10, 10, hint, (int)wcslen(hint));
+
+			//낚시 그리기 코드 
+			SelectObject(hMemDC, hBitmap);
+			if (g_fishingPhase == FISHING_PHASE_GAME)
+				FishingGameLogic(backDC, hBrush, oldBrush, hPen, oldPen, hBitmap_fishing, greenBar, targetFish, fishingGage);
+			break;
+		}
+		}
+
+		// 플레이어참고(backDC, g_player.base, g_player.fishing_arm);
+
+		// 화면으로 한 번에 복사 
+		BitBlt(hDC, 0, 0, CLIENT_W, CLIENT_H, backDC, 0, 0, SRCCOPY);
+
+		// 정리
 		DeleteDC(hMemDC);
+		SelectObject(backDC, oldBackBmp);
+		DeleteObject(backBmp);
+		DeleteDC(backDC);
 		EndPaint(hWnd, &ps);
 		break;
+	}
+
+	// 배경 자동 지우기 차단 
+	case WM_ERASEBKGND:
+		return 1;
 
 	case WM_LBUTTONDOWN:
 	{
-		if (isFishing) {
-			floatingGreenBar = true; //마우스 버튼을 누르면 초록 게이지가 위로 올라가기 시작.
+		if (g_fishingPhase == FISHING_PHASE_GAME) {
+			floatingGreenBar = true; // 낚시 게임 중 마우스 누르면 초록 게이지 올라감
 		}
 
-		if (canFishing && !isFishing) {
-			isFishing = true;
+		if (canFishing && g_fishingPhase == FISHING_PHASE_NONE) {
+			// 낚시 시작: 캐스팅 단계로 진입
+			g_fishingPhase = FISHING_PHASE_CAST;
+			g_castFrameIdx = 0;
+			g_castFrameTimer = 0;
 
-			// 낚시 시작 시 물고기 움직임 유형 결정
+			// 방향에 따라 fishing_arm 시작 인덱스 결정
+			if (g_player.dir == DIR_DOWN) {
+				g_fishingArmIdx = 0; // 앞면 첫 프레임
+			}
+			else {
+				g_fishingArmIdx = 5; // 옆면 첫 프레임
+			}
+
+			// 물고기 움직임 유형 미리 결정
 			targetFish.movementType = SelectFishMovementType();
 			targetFish.moveTimer = 0;
 			targetFish.moveInterval = 5 + rand() % 8;
@@ -274,19 +932,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			else {
 				targetFish.moveDirY = -1;
 			}
-			fishingGage.current = 50; // 게이지 중간값에서 시작
+			fishingGage.current = 50;
 
-			SetTimer(hWnd, 2001, 100, NULL); // 낚시 전용 타이머 시작. 0.1초마다 WM_TIMER 메시지 발생
+			SetTimer(hWnd, 2002, 100, NULL); // 캐스팅/기다림 전용 타이머 (100ms)
 		}
 
-		InvalidateRect(hWnd, NULL, TRUE);
+		InvalidateRect(hWnd, NULL, FALSE);
 		break;
 	}
 
 	case WM_LBUTTONUP:
 	{
-		floatingGreenBar = false; // 마우스 버튼을 떼면 초록 게이지가 더 이상 올라가지 않도록 설정
-		InvalidateRect(hWnd, NULL, TRUE);
+		if (g_fishingPhase == FISHING_PHASE_GAME) {
+			floatingGreenBar = false; // 낚시 게임 중 마우스 떼면 초록 게이지 내려감
+		}
+		InvalidateRect(hWnd, NULL, FALSE);
 		break;
 	}
 
@@ -299,26 +959,125 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	case WM_TIMER:
 	{
 		switch (wParam) { // 타이머 규칙 : 0XXX : 플레이어 관련 타이머, 1XXX : 농사 관련 타이머, 2XXX : 낚시 관련 타이머, 3XXX : 디펜스 관련 타이머
-		case 2001: // 낚시 전용 타이머
+		case 0001: // 플레이어 이동 및 트리거 체크 타이머
+			if (g_currentScene == SCENE_FARM || g_currentScene == SCENE_FISHING) {
+				UpdatePlayer();
+				// 낚시터 씬일 때 낚시 가능 여부 갱신 (발 기준)
+				if (g_currentScene == SCENE_FISHING) {
+					int footOffX = g_player.w / 4;
+					int footOffY = g_player.h * 3 / 4;
+					int footW = g_player.w / 2;
+					int footH = g_player.h / 4;
+					if (IsInFishingArea(g_player.x + footOffX, g_player.y + footOffY, footW, footH, g_player.dir)) {
+						canFishing = true;
+					}
+					else {
+						canFishing = false;
+					}
+				}
+				InvalidateRect(hWnd, NULL, FALSE);
+			}
+			break;
+		case 1001: // [농장] 플레이어 이동/트리거 체크
+
+			break;
+
+		case 2002: // 캐스팅 애니메이션 / 기다림 / 물었다! 타이머
+		{
+			if (g_fishingPhase == FISHING_PHASE_CAST) {
+				// 캐스팅 애니메이션 진행 (0→4 앞면, 5→9 옆면)
+				g_castFrameTimer++;
+				if (g_castFrameTimer >= CAST_TICKS_PER_FRAME) {
+					g_castFrameTimer = 0;
+					g_castFrameIdx++;
+
+					if (g_player.dir == DIR_DOWN) {
+						// 앞면: 0→4 (5프레임)
+						g_fishingArmIdx = g_castFrameIdx;
+						if (g_castFrameIdx >= 4) {
+							// 캐스팅 완료 → 기다림 단계
+							g_fishingArmIdx = 4; // 마지막 프레임 고정
+							g_fishingPhase = FISHING_PHASE_WAIT;
+							g_fishWaitTimer = 0;
+							g_fishWaitTarget = g_fishWaitMin + rand() % (g_fishWaitMax - g_fishWaitMin + 1);
+						}
+					}
+					else {
+						// 옆면: 5→9 (5프레임)
+						g_fishingArmIdx = 5 + g_castFrameIdx;
+						if (g_castFrameIdx >= 4) {
+							g_fishingArmIdx = 9; // 마지막 프레임 고정
+							g_fishingPhase = FISHING_PHASE_WAIT;
+							g_fishWaitTimer = 0;
+							g_fishWaitTarget = g_fishWaitMin + rand() % (g_fishWaitMax - g_fishWaitMin + 1);
+						}
+					}
+				}
+			}
+			else if (g_fishingPhase == FISHING_PHASE_WAIT) {
+				// 기다리는 중: 마지막 프레임 고정, 타이머 카운트
+				g_fishWaitTimer++;
+				if (g_fishWaitTimer >= g_fishWaitTarget) {
+					// 물었다! 단계로 전환
+					g_fishingPhase = FISHING_PHASE_BITE_NOTICE;
+					g_biteNoticeTimer = 0;
+				}
+			}
+			else if (g_fishingPhase == FISHING_PHASE_BITE_NOTICE) {
+				// 물었다! 표시 약 1초 후 낚시 게임 시작
+				g_biteNoticeTimer++;
+				if (g_biteNoticeTimer >= BITE_NOTICE_TICKS) {
+					g_fishingPhase = FISHING_PHASE_GAME;
+					isFishing = true;
+					g_fishGameArmTimer = 0;
+					g_fishGameArmFrame = 0;
+					// 낚시 게임 팔 초기 인덱스 (앞면=0, 옆면=5)
+					if (g_player.dir == DIR_DOWN) {
+						g_fishingArmIdx = 0;
+					}
+					else {
+						g_fishingArmIdx = 5;
+					}
+					KillTimer(hWnd, 2002);
+					SetTimer(hWnd, 2001, 100, NULL); // 낚시 게임 타이머 시작
+				}
+			}
+			break;
+		}
+
+		case 2001: // 낚시 게임 타이머 (FISHING_PHASE_GAME 중에만 동작)
+		{
+			if (g_fishingPhase != FISHING_PHASE_GAME) {
+				break;
+			}
+
+			// 낚시 게임 중 팔 애니메이션 (앞면: 0,1,0,1 / 옆면: 5,6,5,6 반복)
+			g_fishGameArmTimer++;
+			if (g_fishGameArmTimer >= FISH_GAME_ARM_TICKS) {
+				g_fishGameArmTimer = 0;
+				g_fishGameArmFrame = (g_fishGameArmFrame + 1) % 2;
+				if (g_player.dir == DIR_DOWN) {
+					g_fishingArmIdx = g_fishGameArmFrame; // 0 or 1
+				}
+				else {
+					g_fishingArmIdx = 5 + g_fishGameArmFrame; // 5 or 6
+				}
+			}
 
 			if (floatingGreenBar) {
-				greenBar.y -= 5; // 초록 게이지가 위로 올라감
-				if (greenBar.y < 5) // 게이지가 너무 위로 올라가지 않도록 제한
+				greenBar.y -= 5;
+				if (greenBar.y < 5)
 					greenBar.y = 5;
 			}
 			else {
-				greenBar.y += 5; // 초록 게이지가 아래로 내려감
-				if (greenBar.y > 95) // 게이지가 너무 아래로 내려가지 않도록 제한
+				greenBar.y += 5;
+				if (greenBar.y > 95)
 					greenBar.y = 95;
 			}
 
-			// 물고기 움직임 업데이트
 			UpdateFishMovement(targetFish);
-
-			// 물고기가 초록색 영역 안에 있는지 여부 업데이트
 			targetFish.inGreenBar = CheckFishInGreenBar(targetFish, greenBar);
 
-			// 외부 게이지 업데이트: 물고기가 초록 바 안이면 상승, 밖이면 하락
 			if (targetFish.inGreenBar) {
 				fishingGage.current += 1;
 				if (fishingGage.current > fishingGage.maxVal)
@@ -330,20 +1089,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 					fishingGage.current = 0;
 			}
 
-			// 낚시 성공: 게이지가 꽉 찬 경우
 			if (fishingGage.current >= fishingGage.maxVal) {
 				KillTimer(hWnd, 2001);
 				isFishing = false;
+				g_fishingPhase = FISHING_PHASE_NONE;
 				floatingGreenBar = false;
 				// TODO: 아이템 드랍 처리 - targetFish.movementType 에 따라 다른 아이템 드랍
-				// ex) FISH_MOVE_RANDOM -> 일반 물고기
 				MessageBox(hWnd, TEXT("낚시 성공!"), TEXT("낚시"), MB_OK);
 			}
 
-			// 낚시 실패: 게이지가 다 닳은 경우
 			if (fishingGage.current <= 0) {
 				KillTimer(hWnd, 2001);
 				isFishing = false;
+				g_fishingPhase = FISHING_PHASE_NONE;
 				floatingGreenBar = false;
 				// TODO: 낚시 실패 처리
 				MessageBox(hWnd, TEXT("낚시 실패..."), TEXT("낚시"), MB_OK);
@@ -351,23 +1109,53 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 
 			break;
 		}
-		InvalidateRect(hWnd, NULL, TRUE);
+		}
+		InvalidateRect(hWnd, NULL, FALSE);
 		break;
 	}
 
 	case WM_RBUTTONDOWN:
 	{
 
-		InvalidateRect(hWnd, NULL, TRUE);
+		InvalidateRect(hWnd, NULL, FALSE);
 		break;
 	}
 
 	case WM_KEYDOWN:
+		// [농장] 방향키/WASD 입력 (씬과 무관하게 상태만 기록 - 농장 씬에서만 UpdatePlayer가 사용)
 		switch (wParam) {
+		case VK_LEFT:  case 'A': g_keyLeft = true;  break;
+		case VK_RIGHT: case 'D': g_keyRight = true; break;
+		case VK_UP:    case 'W': g_keyUp = true;    break;
+		case VK_DOWN:  case 'S': g_keyDown = true;  break;
 		}
-		InvalidateRect(hWnd, NULL, TRUE);
+		// 낚시 중 방향키 입력 시 낚시 취소 (모든 단계)
+		if (g_fishingPhase != FISHING_PHASE_NONE) {
+			if (wParam == VK_LEFT || wParam == 'A' ||
+				wParam == VK_RIGHT || wParam == 'D' ||
+				wParam == VK_UP || wParam == 'W' ||
+				wParam == VK_DOWN || wParam == 'S') {
+				KillTimer(hWnd, 2001);
+				KillTimer(hWnd, 2002);
+				isFishing = false;
+				g_fishingPhase = FISHING_PHASE_NONE;
+				floatingGreenBar = false;
+			}
+		}
+		InvalidateRect(hWnd, NULL, FALSE);
 		break;
+
+	case WM_KEYUP:
+		switch (wParam) {
+		case VK_LEFT:  case 'A': g_keyLeft = false;  break;
+		case VK_RIGHT: case 'D': g_keyRight = false; break;
+		case VK_UP:    case 'W': g_keyUp = false;    break;
+		case VK_DOWN:  case 'S': g_keyDown = false;  break;
+		}
+		break;
+
 	case WM_DESTROY:
+		KillTimer(hWnd, 1001);
 		PostQuitMessage(0);
 		return 0;
 	}
