@@ -4,6 +4,7 @@
 #include <time.h>
 #include <string>
 #include <queue>
+#include <vector>
 #include <math.h>
 #include <wingdi.h>
 #pragma comment(lib, "msimg32.lib")
@@ -15,7 +16,8 @@ LPCTSTR lpszWindowName = L"windows program 1";
 
 enum GameScene {
 	SCENE_FARM = 0,    // 농장 화면 (조성현 담당)
-	SCENE_FISHING = 1  // 낚시 화면 (문선우 담당)
+	SCENE_FISHING = 1, // 낚시 화면 (문선우 담당)
+	SCENE_SHOP = 2     // 상점 화면 (집 문으로 진입)
 };
 static GameScene g_currentScene = SCENE_FARM;
 
@@ -79,6 +81,222 @@ static bool g_keyDown = false;
 
 // 씬 전환 직후 같은 트리거에서 핑퐁 방지용 쿨다운
 static int g_sceneCooldown = 0;
+
+// ============================================================================
+// [채집물 / 집 / 상점] 추가 시스템
+// ============================================================================
+
+// ---------- 채집물 종류 ----------
+enum HarvestType {
+	HARVEST_TREE = 0,    // Trees.bmp 에서 잘라 그림
+	HARVEST_FOREST = 1   // forest asset.bmp 에서 잘라 그림
+};
+
+// 채집물 한 개
+struct HarvestableObject {
+	int x, y;            // 화면 좌상단 좌표
+	int w, h;            // 충돌/표시 크기
+	HarvestType type;    // 어느 시트에서 그릴지
+	int frameIndex;      // 시트 안에서 몇 번째 칸을 쓸지 (랜덤 선택)
+	bool alive;          // 존재 여부 (false면 캐서 사라진 상태)
+};
+
+static std::vector<HarvestableObject> g_harvestables;
+
+// ----- 시트 자르기 상수 (매직 넘버 대신 상수로 - 시트 구조 다르면 여기만 조정) -----
+//
+// [중요] 시트 한 칸이 정확히 몇 픽셀인지 모를 때는 일단 임의값으로 두고,
+//        나중에 그림판으로 측정한 값으로 아래 *_SRC_FRAME_W / *_SRC_FRAME_H 만 바꾸면 됨.
+//        (옆 프레임이 같이 그려져서 검은 집 등이 보인다면 이 값을 더 작게 조정)
+
+// Trees.bmp (4704 x 48): 가로로 나무들이 늘어선 시트
+// 실측: 시트 시작 부분(x=0~15)이 마젠타 빈 영역, 첫 나무는 x=16~47.
+#define TREES_BMP_W          4704
+#define TREES_BMP_H            48
+#define TREES_SRC_START_X      16   // 시트 좌측 빈 공간 오프셋
+#define TREES_SRC_START_Y       0
+#define TREES_SRC_FRAME_W      32   // 한 나무 가로
+#define TREES_SRC_FRAME_H      48   // 한 나무 세로 (시트 전체 높이)
+#define TREES_SRC_PITCH_X      34   // 다음 나무까지 한 칸 간격 (가로)
+#define TREES_SRC_COLS          8   // 안정적으로 잘리는 첫 N개만 사용 (들쭉날쭉이라 너무 크게 안 잡음)
+
+// forest asset.bmp (660 x 120): 숲 채집물 시트 (2행 구조)
+// 실측: 시작 (13, 1) ~ 한 칸 약 45x53, 행 간격 약 65.
+#define FOREST_BMP_W          660
+#define FOREST_BMP_H          120
+#define FOREST_SRC_START_X     13
+#define FOREST_SRC_START_Y      1
+#define FOREST_SRC_FRAME_W     36   // 한 에셋 가로 (안전하게 좀 작게)
+#define FOREST_SRC_FRAME_H     53   // 한 에셋 세로
+#define FOREST_SRC_PITCH_X     60   // 다음 에셋까지 가로 간격
+#define FOREST_SRC_PITCH_Y     65   // 다음 행까지 세로 간격
+#define FOREST_SRC_COLS         8   // 안정적으로 잘리는 첫 N열만 사용
+#define FOREST_SRC_ROWS         2
+
+// 화면에 표시되는 채집물 크기 (확대)
+#define HARVESTABLE_DRAW_W     48
+#define HARVESTABLE_DRAW_H     48
+
+// 채집물 스폰 개수 / 영역
+#define HARVESTABLE_MIN_COUNT  10
+#define HARVESTABLE_MAX_COUNT  15
+#define HARVESTABLE_AREA_X     40
+#define HARVESTABLE_AREA_Y     60
+#define HARVESTABLE_AREA_W     (CLIENT_W - 80)
+#define HARVESTABLE_AREA_H     (CLIENT_H - 120)
+
+// 비트맵 핸들
+static HBITMAP g_hBitmap_trees = NULL;
+static HBITMAP g_hBitmap_forest = NULL;
+static HBITMAP g_hBitmap_house = NULL;
+
+// ----- 집 (House.bmp 1440 x 112): 가로 시트 -----
+// 실측: 첫 집은 x=22 ~ x=73 (52px). x=0~21, x=74~117은 마젠타 빈 공간.
+// (다른 집/문애니 프레임은 96px 간격으로 반복)
+#define HOUSE_SRC_X           22    // 첫 집 시작 x
+#define HOUSE_SRC_Y            0
+#define HOUSE_SRC_W           52    // 첫 집 한 채 가로
+#define HOUSE_SRC_H          112    // 시트 전체 높이
+
+// 화면 표시 위치 (중앙보다 살짝 위쪽 고정)
+#define HOUSE_DRAW_W         200
+#define HOUSE_DRAW_H         180
+#define HOUSE_DRAW_X         (CLIENT_W / 2 - HOUSE_DRAW_W / 2)
+#define HOUSE_DRAW_Y         140    // 화면 중앙(400)보다 살짝 위쪽
+
+// 집 문 트리거 (집 하단 가운데)
+#define TRIGGER_TO_SHOP_X    (HOUSE_DRAW_X + HOUSE_DRAW_W / 2 - 24)
+#define TRIGGER_TO_SHOP_Y    (HOUSE_DRAW_Y + HOUSE_DRAW_H - 40)
+#define TRIGGER_TO_SHOP_W    48
+#define TRIGGER_TO_SHOP_H    40
+
+// 공용 투명색 (마젠타)
+#define ASSET_TRANSPARENT    RGB(255, 0, 255)
+
+// ---------- 채집물 초기화: 화면 내 랜덤 스폰 ----------
+void InitHarvestables() {
+	g_harvestables.clear();
+	int count = HARVESTABLE_MIN_COUNT + rand() % (HARVESTABLE_MAX_COUNT - HARVESTABLE_MIN_COUNT + 1);
+
+	for (int i = 0; i < count; i++) {
+		HarvestableObject obj;
+		obj.w = HARVESTABLE_DRAW_W;
+		obj.h = HARVESTABLE_DRAW_H;
+		obj.x = HARVESTABLE_AREA_X + rand() % (HARVESTABLE_AREA_W - obj.w);
+		obj.y = HARVESTABLE_AREA_Y + rand() % (HARVESTABLE_AREA_H - obj.h);
+		obj.type = (rand() % 2 == 0) ? HARVEST_TREE : HARVEST_FOREST;
+		if (obj.type == HARVEST_TREE)
+			obj.frameIndex = rand() % TREES_SRC_COLS;
+		else
+			obj.frameIndex = rand() % (FOREST_SRC_COLS * FOREST_SRC_ROWS);
+		obj.alive = true;
+		g_harvestables.push_back(obj);
+	}
+}
+
+// ---------- 채집물 그리기 ----------
+void DrawHarvestables(HDC hDC) {
+	if (g_harvestables.empty()) return;
+
+	HDC memDC = CreateCompatibleDC(hDC);
+	for (size_t i = 0; i < g_harvestables.size(); i++) {
+		HarvestableObject& o = g_harvestables[i];
+		if (!o.alive) continue;
+
+		int srcX = 0, srcY = 0, srcW = 0, srcH = 0;
+		HBITMAP src = NULL;
+		if (o.type == HARVEST_TREE) {
+			src = g_hBitmap_trees;
+			srcW = TREES_SRC_FRAME_W;
+			srcH = TREES_SRC_FRAME_H;
+			srcX = TREES_SRC_START_X + o.frameIndex * TREES_SRC_PITCH_X;
+			srcY = TREES_SRC_START_Y;
+		}
+		else { // HARVEST_FOREST
+			src = g_hBitmap_forest;
+			srcW = FOREST_SRC_FRAME_W;
+			srcH = FOREST_SRC_FRAME_H;
+			int col = o.frameIndex % FOREST_SRC_COLS;
+			int row = o.frameIndex / FOREST_SRC_COLS;
+			srcX = FOREST_SRC_START_X + col * FOREST_SRC_PITCH_X;
+			srcY = FOREST_SRC_START_Y + row * FOREST_SRC_PITCH_Y;
+		}
+
+		if (src == NULL) {
+			// 이미지 로드 실패 시 fallback: 갈색/초록 사각형
+			HBRUSH fb = CreateSolidBrush(o.type == HARVEST_TREE ? RGB(40, 100, 40) : RGB(150, 100, 50));
+			RECT r = { o.x, o.y, o.x + o.w, o.y + o.h };
+			FillRect(hDC, &r, fb);
+			DeleteObject(fb);
+			continue;
+		}
+
+		HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
+		TransparentBlt(hDC,
+			o.x, o.y, o.w, o.h,
+			memDC,
+			srcX, srcY, srcW, srcH,
+			ASSET_TRANSPARENT);
+		SelectObject(memDC, oldB);
+	}
+	DeleteDC(memDC);
+}
+
+// ---------- 집 그리기 ----------
+void DrawHouse(HDC hDC) {
+	if (g_hBitmap_house == NULL) {
+		// fallback: 갈색 사각형 + 빨간 지붕
+		HBRUSH body = CreateSolidBrush(RGB(180, 130, 90));
+		RECT r = { HOUSE_DRAW_X, HOUSE_DRAW_Y + 40, HOUSE_DRAW_X + HOUSE_DRAW_W, HOUSE_DRAW_Y + HOUSE_DRAW_H };
+		FillRect(hDC, &r, body);
+		DeleteObject(body);
+
+		HBRUSH roof = CreateSolidBrush(RGB(180, 70, 50));
+		HBRUSH oldB = (HBRUSH)SelectObject(hDC, roof);
+		HPEN nullPen = CreatePen(PS_NULL, 0, 0);
+		HPEN oldP = (HPEN)SelectObject(hDC, nullPen);
+		POINT pts[3] = {
+			{ HOUSE_DRAW_X - 10, HOUSE_DRAW_Y + 40 },
+			{ HOUSE_DRAW_X + HOUSE_DRAW_W / 2, HOUSE_DRAW_Y },
+			{ HOUSE_DRAW_X + HOUSE_DRAW_W + 10, HOUSE_DRAW_Y + 40 }
+		};
+		Polygon(hDC, pts, 3);
+		SelectObject(hDC, oldB);
+		SelectObject(hDC, oldP);
+		DeleteObject(roof);
+		DeleteObject(nullPen);
+		return;
+	}
+
+	HDC memDC = CreateCompatibleDC(hDC);
+	HBITMAP oldB = (HBITMAP)SelectObject(memDC, g_hBitmap_house);
+	TransparentBlt(hDC,
+		HOUSE_DRAW_X, HOUSE_DRAW_Y, HOUSE_DRAW_W, HOUSE_DRAW_H,
+		memDC,
+		HOUSE_SRC_X, HOUSE_SRC_Y, HOUSE_SRC_W, HOUSE_SRC_H,
+		ASSET_TRANSPARENT);
+	SelectObject(memDC, oldB);
+	DeleteDC(memDC);
+}
+
+// ---------- 상점 트리거 안내 (개발용) ----------
+void DrawShopTriggerHint(HDC hDC) {
+	HPEN p = CreatePen(PS_DOT, 2, RGB(255, 100, 100));
+	HPEN op = (HPEN)SelectObject(hDC, p);
+	HBRUSH nb = (HBRUSH)GetStockObject(NULL_BRUSH);
+	HBRUSH ob = (HBRUSH)SelectObject(hDC, nb);
+	Rectangle(hDC, TRIGGER_TO_SHOP_X, TRIGGER_TO_SHOP_Y,
+		TRIGGER_TO_SHOP_X + TRIGGER_TO_SHOP_W,
+		TRIGGER_TO_SHOP_Y + TRIGGER_TO_SHOP_H);
+	SelectObject(hDC, op);
+	SelectObject(hDC, ob);
+	DeleteObject(p);
+
+	SetBkMode(hDC, TRANSPARENT);
+	SetTextColor(hDC, RGB(255, 230, 230));
+	const wchar_t* hint = L"상점";
+	TextOut(hDC, TRIGGER_TO_SHOP_X + 6, TRIGGER_TO_SHOP_Y + 10, hint, (int)wcslen(hint));
+}
 
 // 낚시터 이동 불가 영역
 #define FISHING_BLOCK_COUNT 21
@@ -280,6 +498,16 @@ void UpdatePlayer() {
 		// 농장 출입구 앞에 배치 (농장→낚시 트리거 왼쪽)
 		g_player.x = TRIGGER_TO_FISH_X - g_player.w - 10;
 		g_player.y = TRIGGER_TO_FISH_Y + TRIGGER_TO_FISH_H / 2 - g_player.h / 2;
+		g_sceneCooldown = 30;
+	}
+
+	// 농장 → 상점: 집 문에 닿으면 SCENE_SHOP으로 전환
+	if (g_currentScene == SCENE_FARM && RectOverlap(g_player.x, g_player.y, g_player.w, g_player.h,
+		TRIGGER_TO_SHOP_X, TRIGGER_TO_SHOP_Y, TRIGGER_TO_SHOP_W, TRIGGER_TO_SHOP_H)) {
+		g_currentScene = SCENE_SHOP;
+		// 다음에 농장으로 돌아왔을 때 또 문에 끼지 않게 집 아래쪽으로 이동
+		g_player.x = HOUSE_DRAW_X + HOUSE_DRAW_W / 2 - g_player.w / 2;
+		g_player.y = HOUSE_DRAW_Y + HOUSE_DRAW_H + 10;
 		g_sceneCooldown = 30;
 	}
 }
@@ -685,7 +913,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	{
 	case WM_CREATE:
 		// 농장 배경 로드
-		hBitmap_farm = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\농장 배경.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		// (파일명: 농장배경.bmp - 공백 없음. 위치: Project1\이미지소스\농장\)
+		hBitmap_farm = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\농장배경.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+
+		// 채집물/집 비트맵 로드 (마젠타 투명)
+		g_hBitmap_trees  = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\Trees.bmp"),        IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_forest = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\forest asset.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_house  = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\House.bmp"),        IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+
+		// 농장 씬 시작 시 채집물 랜덤 스폰
+		InitHarvestables();
 
 		// 플레이어 이미지 로드 (아래 base/base_arm 로드에서 수행)
 
@@ -774,11 +1011,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		{
 			// 농장 배경 그리기 -- 백버퍼에 축소 출력
 			if (hBitmap_farm != NULL) {
+				// 농장배경.bmp 원본 사이즈 (실측: 2290x1856)
+				const int FARM_BG_SRC_W = 2290;
+				const int FARM_BG_SRC_H = 1856;
 				HDC hFarmDC = CreateCompatibleDC(backDC);
 				HBITMAP hOldFarm = (HBITMAP)SelectObject(hFarmDC, hBitmap_farm);
 				SetStretchBltMode(backDC, HALFTONE);
 				StretchBlt(backDC, 0, 0, CLIENT_W, CLIENT_H,
-					hFarmDC, 0, 0, 2288, 1856,
+					hFarmDC, 0, 0, FARM_BG_SRC_W, FARM_BG_SRC_H,
 					SRCCOPY);
 				SelectObject(hFarmDC, hOldFarm);
 				DeleteDC(hFarmDC);
@@ -790,8 +1030,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				DeleteObject(bg);
 			}
 
-			// 낚시터 트리거 안내 
-			DrawFishTriggerHint(backDC);
+			// (트리거 안내 박스/텍스트는 화면에 그리지 않음 - 충돌 판정만 동작)
+
+			// 집 (House.bmp)
+			DrawHouse(backDC);
+
+			// 채집물 (나무 / 숲 에셋) — SCENE_FARM 안에서만 그림
+			DrawHarvestables(backDC);
 
 			// 플레이어 (스프라이트 or 도형)
 			DrawPlayer(backDC);
@@ -799,7 +1044,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			// 안내
 			SetBkMode(backDC, TRANSPARENT);
 			SetTextColor(backDC, RGB(255, 255, 255));
-			const wchar_t* info = L"[농장] 방향키/WASD 이동, 오른쪽 위 길로 가면 낚시터";
+			const wchar_t* info = L"[농장] 방향키/WASD 이동, 오른쪽 위 길→낚시터, 집 문→상점";
 			TextOut(backDC, 10, 10, info, (int)wcslen(info));
 			break;
 		}
@@ -836,10 +1081,27 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			const wchar_t* hint = L"[낚시터] 좌클릭으로 낚시 시작";
 			TextOut(backDC, 10, 10, hint, (int)wcslen(hint));
 
-			//낚시 그리기 코드 
+			//낚시 그리기 코드
 			SelectObject(hMemDC, hBitmap);
 			if (isFishing)
 				FishingGameLogic(backDC, hBrush, oldBrush, hPen, oldPen, hBitmap_fishing, greenBar, targetFish, fishingGage);
+			break;
+		}
+
+		case SCENE_SHOP:
+		{
+			// 상점 씬: 임시 회색 배경 + 안내 텍스트
+			HBRUSH shopBg = CreateSolidBrush(RGB(120, 120, 120));
+			RECT r = { 0, 0, CLIENT_W, CLIENT_H };
+			FillRect(backDC, &r, shopBg);
+			DeleteObject(shopBg);
+
+			SetBkMode(backDC, TRANSPARENT);
+			SetTextColor(backDC, RGB(255, 255, 255));
+			const wchar_t* msg = L"상점 씬입니다";
+			TextOut(backDC, CLIENT_W / 2 - 60, CLIENT_H / 2 - 20, msg, (int)wcslen(msg));
+			const wchar_t* hint = L"(추후 상점 UI 구현 예정)";
+			TextOut(backDC, CLIENT_W / 2 - 90, CLIENT_H / 2 + 10, hint, (int)wcslen(hint));
 			break;
 		}
 		}
