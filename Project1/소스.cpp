@@ -11,7 +11,6 @@ HINSTANCE g_hInst;
 LPCTSTR lpszClass = L"Window Class";
 LPCTSTR lpszWindowName = L"windows program 1";
 
-
 enum GameScene {
 	SCENE_FARM = 0,    // 농장 화면 (조성현 담당)
 	SCENE_FISHING = 1  // 낚시 화면 (문선우 담당)
