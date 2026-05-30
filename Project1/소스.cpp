@@ -3,7 +3,6 @@
 #include <stdlib.h>
 #include <time.h>
 #include <string>
-#include <queue>
 #include <vector>
 #include <math.h>
 #include <wingdi.h>
@@ -101,6 +100,590 @@ static bool g_keyDown = false;
 
 // 씬 전환 직후 같은 트리거에서 핑퐁 방지용 쿨다운
 static int g_sceneCooldown = 0;
+
+// ============================================================================
+// [확장 시스템] 카메라 / 절벽충돌 / 애니집 / 나무벌목 / 농사 / 인벤토리(스와핑)
+//   * 모든 렌더링은 비트맵 + TransparentBlt(투명색 RGB(255,0,255)) 사용.
+//   * GDI 기본 도형(Rectangle/Ellipse 등)은 일절 사용하지 않음.
+//   * 기존 씬/낚시/트리거/플레이어 로직은 손대지 않고 추가됨.
+// ============================================================================
+
+// ---------- 맵/타일 상수 ----------
+#define TILE_SIZE         32
+#define MAP_TILE_W        40
+#define MAP_TILE_H        40
+#define MAP_PIXEL_W       (TILE_SIZE * MAP_TILE_W)   // 1280
+#define MAP_PIXEL_H       (TILE_SIZE * MAP_TILE_H)   // 1280
+
+// 화면 안쪽 데드존: 플레이어가 이 안쪽에 있을 때까지는 카메라 정지,
+// 데드존 경계에 닿으면 카메라가 따라감.
+// (이 값을 0에 가깝게 하면 카메라가 즉시 플레이어 추적)
+#define CAMERA_DEADZONE_MARGIN  120
+
+// 카메라 clamp 한계 (맵 1280, 화면 800 → 0 ~ 480)
+#define CAMERA_MAX_X      (MAP_PIXEL_W - CLIENT_W)   // 480
+#define CAMERA_MAX_Y      (MAP_PIXEL_H - CLIENT_H)   // 480
+
+// ---------- 카메라 ----------
+static int cameraX = 0;
+static int cameraY = 0;
+
+// ---------- 전방 선언: 아래쪽에 정의된 함수 미리 알려주기 ----------
+static bool RectOverlap(int ax, int ay, int aw, int ah,
+	int bx, int by, int bw, int bh);
+
+// ---------- 절벽(이동 불가) 충돌 영역: 좌측 상단 큰 사각형 ----------
+// 사진 비율 기준: left=0, top=0, right=600, bottom=450
+// (위치/크기 안 맞으면 이 4개 값만 조정)
+#define CLIFF_RECT_COUNT 1
+static RECT g_cliffRects[CLIFF_RECT_COUNT] = {
+	{ 0, 0, 630, 500 }
+};
+
+// ---------- 친구 맵 포탈 트리거 (맵 우측 상단 흙길 끝) ----------
+// 사용자 지정: worldX > 1200 && worldY < 250 부근
+#define PORTAL_X_THRESHOLD  1200
+#define PORTAL_Y_THRESHOLD   250
+static bool g_portalTriggered = false;   // 한 번 알리고 다시 안 알리도록
+
+// ---------- 동적 오브젝트: 나무 (3종) ----------
+enum TreeKind {
+	TREE_KIND_1 = 0,  // Tree1 118x140
+	TREE_KIND_2 = 1,  // Tree2 56x72
+	TREE_KIND_3 = 2   // Tree3 50x62
+};
+struct Tree {
+	int x, y;       // 월드 좌표 (좌상단)
+	int w, h;       // 표시 크기 (= 원본 크기)
+	int kind;       // TreeKind
+	int hp;         // 체력 (0이면 벌목됨)
+	bool isAlive;
+};
+static std::vector<Tree> g_trees;
+#define TREE_COUNT      15
+#define TREE_HP_DEFAULT  3   // 도끼 3번 치면 베어짐
+
+// ---------- 동적 오브젝트: 애니메이션 집 ----------
+// house.bmp 768x96 = 96x96 × 8 프레임 (가로 스트립)
+struct AnimatedHouse {
+	int x, y;                // 월드 좌표 (좌상단)
+	int currentFrame;        // 현재 프레임
+	int frameTimer;          // 프레임 전환 카운터
+	bool isDoorOpening;      // 문 열기 애니 진행 중
+	bool doorAnimDone;       // 문 애니 끝남
+	int shopTransitionTimer; // 문 애니 끝난 후 씬 전환까지 카운트다운 (30ms tick 기준)
+};
+static AnimatedHouse g_house = { 600, 350, 0, 0, false, false, 0 };
+
+#define HOUSE_FRAME_W       96
+#define HOUSE_FRAME_H       96
+#define HOUSE_FRAME_COUNT    8       // 0~7
+#define HOUSE_DRAW_W       192       // 화면에 2배 확대 출력
+#define HOUSE_DRAW_H       192
+#define HOUSE_ANIM_TICKS    10       // 프레임 전환 간격
+
+// 집의 문 충돌 박스: 절대 좌표 기준 1타일(32x32), 집 바로 아래 (현관문 바로 앞)
+// 캐릭터의 worldX/worldY가 이 RECT 안일 때만 문 열림 애니 시작.
+#define HOUSE_DOOR_W       32
+#define HOUSE_DOOR_H       32
+#define HOUSE_DOOR_X       (g_house.x + (HOUSE_DRAW_W - HOUSE_DOOR_W) / 2)
+#define HOUSE_DOOR_Y       (g_house.y + HOUSE_DRAW_H)   // 집 바로 아래
+
+// ---------- 농사 2D 배열 ----------
+// 0=기본 땅, 1=경작된 땅, 2=젖은 땅
+static int farmState[MAP_TILE_H][MAP_TILE_W] = { 0, };
+
+// 농사 타일 시트에서 잘라낼 좌표 (사용자 지정값)
+#define FARM_TILE_TILLED_SRC_X    96
+#define FARM_TILE_TILLED_SRC_Y  1152
+#define FARM_TILE_WET_SRC_X      352
+#define FARM_TILE_WET_SRC_Y      128
+
+// ---------- 도구 ----------
+enum ToolType {
+	TOOL_NONE = 0,
+	TOOL_HOE = 1,    // 호미
+	TOOL_WATER = 2,  // 물뿌리개
+	TOOL_POLE = 3,   // 낚싯대
+	TOOL_AXE = 4     // 도끼 (벌목용 - 4x4에서 4번 슬롯에 장착)
+};
+static ToolType g_currentTool = TOOL_NONE;
+static bool g_isInventoryOpen = false;
+
+// ---------- 인벤토리 슬롯 데이터 ----------
+// 1줄 퀵슬롯 4칸: [0]=HOE 고정 [1]=WATER 고정 [2]=POLE 고정 [3]=장착(빈칸 가능)
+#define QUICKSLOT_COUNT  4
+static ToolType g_quickSlot[QUICKSLOT_COUNT] = {
+	TOOL_HOE, TOOL_WATER, TOOL_POLE, TOOL_NONE
+};
+static int g_selectedQuickSlot = -1;  // 현재 선택된 퀵슬롯 인덱스 (없으면 -1)
+
+// 4x4 인벤토리 16칸 - 도끼와 일반 아이템 예시
+#define INV4_COUNT 16
+static ToolType g_inv4[INV4_COUNT] = {
+	TOOL_AXE,  TOOL_NONE, TOOL_NONE, TOOL_NONE,
+	TOOL_NONE, TOOL_NONE, TOOL_NONE, TOOL_NONE,
+	TOOL_NONE, TOOL_NONE, TOOL_NONE, TOOL_NONE,
+	TOOL_NONE, TOOL_NONE, TOOL_NONE, TOOL_NONE
+};
+static int g_selectedInv4 = -1;       // 4x4에서 선택된 아이템 슬롯 인덱스
+
+// ---------- UI 화면 좌표 ----------
+// 1줄 퀵슬롯: inventory_1.bmp 300x96, 화면 하단 중앙
+#define QUICKSLOT_BG_W        300
+#define QUICKSLOT_BG_H         96
+#define QUICKSLOT_BG_X        (CLIENT_W / 2 - (QUICKSLOT_BG_W + 64) / 2)   // 가방 옆에 붙여 그리므로 합쳐 중앙
+#define QUICKSLOT_BG_Y        (CLIENT_H - QUICKSLOT_BG_H - 20)
+#define QUICKSLOT_ICON_SIZE    48
+#define QUICKSLOT_PAD          12
+
+// 가방 아이콘 (Inventory.bmp 64x68) - 1줄 인벤토리 바로 옆
+#define BAG_W                 64
+#define BAG_H                 68
+#define BAG_X                 (QUICKSLOT_BG_X + QUICKSLOT_BG_W + 4)
+#define BAG_Y                 (QUICKSLOT_BG_Y + (QUICKSLOT_BG_H - BAG_H) / 2)
+
+// 4x4 인벤토리: inventory_4.bmp 300x300, 화면 정중앙
+#define INV4_BG_W             300
+#define INV4_BG_H             300
+#define INV4_BG_X             (CLIENT_W / 2 - INV4_BG_W / 2)
+#define INV4_BG_Y             (CLIENT_H / 2 - INV4_BG_H / 2)
+#define INV4_CELL_SIZE        48    // 16칸 셀 크기 (4*48=192, 양쪽 여백 (300-192)/2=54)
+#define INV4_CELL_OFFSET_X    54
+#define INV4_CELL_OFFSET_Y    54
+
+// ---------- 비트맵 핸들 (확장 리소스) ----------
+static HBITMAP g_hBitmap_map        = NULL; // background/map.bmp 1280x1280
+static HBITMAP g_hBitmap_house      = NULL; // 집/house.bmp 768x96 (96x96 × 8프레임)
+static HBITMAP g_hBitmap_tree1      = NULL; // tree/Tree1_118x140.bmp
+static HBITMAP g_hBitmap_tree2      = NULL; // tree/Tree2_56x72.bmp
+static HBITMAP g_hBitmap_tree3      = NULL; // tree/Tree3_50x62.bmp
+static HBITMAP g_hBitmap_cultivated = NULL; // farming/cultivated_land.bmp 32x32
+static HBITMAP g_hBitmap_wet        = NULL; // farming/wet_ground.bmp 32x32
+static HBITMAP g_hBitmap_icon_hoe   = NULL;
+static HBITMAP g_hBitmap_icon_water = NULL;
+static HBITMAP g_hBitmap_icon_pole  = NULL;
+static HBITMAP g_hBitmap_inv_quick  = NULL; // inventory_1.bmp 300x96
+static HBITMAP g_hBitmap_inv_main   = NULL; // inventory_4.bmp 300x300
+static HBITMAP g_hBitmap_inv_bag    = NULL; // Inventory.bmp 64x68
+
+// 공용 투명색
+#define EXT_TRANSPARENT      RGB(255, 0, 255)
+
+// ---------- 헬퍼: 두 점 거리(타일 단위) ----------
+static int TileChebyshevDist(int ax, int ay, int bx, int by) {
+	int dx = ax - bx; if (dx < 0) dx = -dx;
+	int dy = ay - by; if (dy < 0) dy = -dy;
+	return (dx > dy) ? dx : dy;
+}
+
+// ---------- 카메라 업데이트 ----------
+// 플레이어 월드 좌표 기준, 화면 데드존을 벗어나면 카메라가 따라가도록.
+void UpdateCamera() {
+	// 플레이어가 화면상 어디에 있어야 하는지 (현재 카메라 기준)
+	int playerScreenX = g_player.x - cameraX;
+	int playerScreenY = g_player.y - cameraY;
+
+	int leftBound  = CAMERA_DEADZONE_MARGIN;
+	int rightBound = CLIENT_W - CAMERA_DEADZONE_MARGIN;
+	int topBound   = CAMERA_DEADZONE_MARGIN;
+	int botBound   = CLIENT_H - CAMERA_DEADZONE_MARGIN;
+
+	if (playerScreenX < leftBound)  cameraX -= (leftBound  - playerScreenX);
+	if (playerScreenX > rightBound) cameraX += (playerScreenX - rightBound);
+	if (playerScreenY < topBound)   cameraY -= (topBound   - playerScreenY);
+	if (playerScreenY > botBound)   cameraY += (playerScreenY - botBound);
+
+	// Clamp 0 ~ 480
+	if (cameraX < 0) cameraX = 0;
+	if (cameraY < 0) cameraY = 0;
+	if (cameraX > CAMERA_MAX_X) cameraX = CAMERA_MAX_X;
+	if (cameraY > CAMERA_MAX_Y) cameraY = CAMERA_MAX_Y;
+}
+
+// ---------- 절벽(이동불가) 영역 충돌 검사 ----------
+static bool IsBlockedByCliff(int px, int py, int pw, int ph) {
+	for (int i = 0; i < CLIFF_RECT_COUNT; i++) {
+		RECT& r = g_cliffRects[i];
+		if (RectOverlap(px, py, pw, ph,
+			r.left, r.top, r.right - r.left, r.bottom - r.top)) return true;
+	}
+	return false;
+}
+
+// 한 점이 절벽 영역 안에 있는가
+static bool PointInCliff(int x, int y) {
+	for (int i = 0; i < CLIFF_RECT_COUNT; i++) {
+		RECT& r = g_cliffRects[i];
+		if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return true;
+	}
+	return false;
+}
+
+// 한 점이 집 발판 위치 안에 있는가 (나무 스폰 시 회피용)
+static bool PointInHouseFootprint(int x, int y) {
+	return (x >= g_house.x - 10 && x < g_house.x + HOUSE_DRAW_W + 10 &&
+		    y >= g_house.y - 10 && y < g_house.y + HOUSE_DRAW_H + 10);
+}
+
+// ---------- 나무 초기화: 절벽/집 피해서 15그루 ----------
+void InitTrees() {
+	g_trees.clear();
+	int placed = 0;
+	int tries = 0;
+	while (placed < TREE_COUNT && tries < TREE_COUNT * 50) {
+		tries++;
+		Tree t;
+		t.kind = rand() % 3;
+		if (t.kind == TREE_KIND_1) { t.w = 118; t.h = 140; }
+		else if (t.kind == TREE_KIND_2) { t.w = 56; t.h = 72; }
+		else { t.w = 50; t.h = 62; }
+		t.x = 80 + rand() % (MAP_PIXEL_W - t.w - 160);
+		t.y = 80 + rand() % (MAP_PIXEL_H - t.h - 160);
+		// 절벽/집 회피
+		bool bad = false;
+		// 발판(나무 밑동)이 절벽이면 거부
+		int footX = t.x + t.w / 2;
+		int footY = t.y + t.h - 6;
+		if (PointInCliff(footX, footY)) bad = true;
+		if (PointInHouseFootprint(footX, footY)) bad = true;
+		// 다른 나무와 너무 겹쳐도 거부
+		for (size_t k = 0; k < g_trees.size() && !bad; k++) {
+			Tree& o = g_trees[k];
+			if (RectOverlap(t.x, t.y, t.w, t.h, o.x, o.y, o.w, o.h)) bad = true;
+		}
+		if (bad) continue;
+		t.hp = TREE_HP_DEFAULT;
+		t.isAlive = true;
+		g_trees.push_back(t);
+		placed++;
+	}
+}
+
+// ---------- 나무 그리기 (3종 비트맵, 카메라 오프셋) ----------
+void DrawTrees(HDC hDC) {
+	if (g_trees.empty()) return;
+	HDC memDC = CreateCompatibleDC(hDC);
+
+	for (size_t i = 0; i < g_trees.size(); i++) {
+		Tree& t = g_trees[i];
+		if (!t.isAlive) continue;
+		int sx = t.x - cameraX;
+		int sy = t.y - cameraY;
+		if (sx + t.w < 0 || sx > CLIENT_W) continue;
+		if (sy + t.h < 0 || sy > CLIENT_H) continue;
+
+		HBITMAP src = NULL;
+		if (t.kind == TREE_KIND_1)      src = g_hBitmap_tree1;
+		else if (t.kind == TREE_KIND_2) src = g_hBitmap_tree2;
+		else                            src = g_hBitmap_tree3;
+		if (src == NULL) continue; // 이미지 없으면 건너뜀 (도형 fallback 사용 금지)
+
+		HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
+		TransparentBlt(hDC, sx, sy, t.w, t.h,
+			memDC, 0, 0, t.w, t.h,
+			EXT_TRANSPARENT);
+		SelectObject(memDC, oldB);
+	}
+	DeleteDC(memDC);
+}
+
+// ---------- 집 애니메이션 업데이트 ----------
+// 평상시: 프레임 0~3 (굴뚝 연기) 반복
+// 문 열기: 프레임 4~7 진행 후 정지 + doorAnimDone=true
+void UpdateHouseAnim() {
+	g_house.frameTimer++;
+	if (g_house.frameTimer < HOUSE_ANIM_TICKS) return;
+	g_house.frameTimer = 0;
+
+	if (g_house.isDoorOpening) {
+		if (g_house.currentFrame < 4) g_house.currentFrame = 4; // 문 애니 시작 프레임
+		else g_house.currentFrame++;
+		if (g_house.currentFrame >= HOUSE_FRAME_COUNT) {
+			g_house.currentFrame = HOUSE_FRAME_COUNT - 1;
+			g_house.doorAnimDone = true;
+		}
+	}
+	else {
+		// 0~3 굴뚝 연기 루프
+		g_house.currentFrame = (g_house.currentFrame + 1) % 4;
+	}
+}
+
+// ---------- 집 그리기 (house.bmp 768x96 = 96x96 × 8프레임, 2배 확대) ----------
+void DrawHouseAnimated(HDC hDC) {
+	if (g_hBitmap_house == NULL) return; // 이미지 없으면 그리지 않음
+	int sx = g_house.x - cameraX;
+	int sy = g_house.y - cameraY;
+
+	HDC memDC = CreateCompatibleDC(hDC);
+	HBITMAP oldB = (HBITMAP)SelectObject(memDC, g_hBitmap_house);
+	int srcX = g_house.currentFrame * HOUSE_FRAME_W;
+	int srcY = 0;
+	TransparentBlt(hDC,
+		sx, sy, HOUSE_DRAW_W, HOUSE_DRAW_H,
+		memDC,
+		srcX, srcY, HOUSE_FRAME_W, HOUSE_FRAME_H,
+		EXT_TRANSPARENT);
+	SelectObject(memDC, oldB);
+	DeleteDC(memDC);
+}
+
+// ---------- 농사 타일 그리기 (개별 비트맵 cultivated_land / wet_ground) ----------
+void DrawFarmTiles(HDC hDC) {
+	if (g_hBitmap_cultivated == NULL && g_hBitmap_wet == NULL) return;
+	HDC memDC = CreateCompatibleDC(hDC);
+	for (int r = 0; r < MAP_TILE_H; r++) {
+		for (int c = 0; c < MAP_TILE_W; c++) {
+			int s = farmState[r][c];
+			if (s == 0) continue;
+			int sx = c * TILE_SIZE - cameraX;
+			int sy = r * TILE_SIZE - cameraY;
+			if (sx + TILE_SIZE < 0 || sx > CLIENT_W) continue;
+			if (sy + TILE_SIZE < 0 || sy > CLIENT_H) continue;
+
+			HBITMAP src = (s == 1) ? g_hBitmap_cultivated : g_hBitmap_wet;
+			if (src == NULL) continue;
+			HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
+			TransparentBlt(hDC, sx, sy, TILE_SIZE, TILE_SIZE,
+				memDC, 0, 0, TILE_SIZE, TILE_SIZE,
+				EXT_TRANSPARENT);
+			SelectObject(memDC, oldB);
+		}
+	}
+	DeleteDC(memDC);
+}
+
+// ---------- 도구 → 아이콘 비트맵 헬퍼 ----------
+static HBITMAP GetToolIconBitmap(ToolType t) {
+	switch (t) {
+	case TOOL_HOE:   return g_hBitmap_icon_hoe;
+	case TOOL_WATER: return g_hBitmap_icon_water;
+	case TOOL_POLE:  return g_hBitmap_icon_pole;
+	case TOOL_AXE:   return g_hBitmap_icon_pole; // (도끼 별도 아이콘 없으니 임시로 pole)
+	default: return NULL;
+	}
+}
+
+// 퀵슬롯 i번 슬롯의 화면 사각형 계산
+static void GetQuickSlotRect(int i, int* outX, int* outY) {
+	int slotPitch = QUICKSLOT_ICON_SIZE + QUICKSLOT_PAD;
+	int totalSlotsW = QUICKSLOT_COUNT * QUICKSLOT_ICON_SIZE + (QUICKSLOT_COUNT - 1) * QUICKSLOT_PAD;
+	int startX = QUICKSLOT_BG_X + (QUICKSLOT_BG_W - totalSlotsW) / 2;
+	int iconY = QUICKSLOT_BG_Y + (QUICKSLOT_BG_H - QUICKSLOT_ICON_SIZE) / 2;
+	if (outX) *outX = startX + i * slotPitch;
+	if (outY) *outY = iconY;
+}
+
+// 4x4 i번 셀(0..15)의 화면 사각형 계산
+static void GetInv4CellRect(int i, int* outX, int* outY) {
+	int row = i / 4;
+	int col = i % 4;
+	if (outX) *outX = INV4_BG_X + INV4_CELL_OFFSET_X + col * INV4_CELL_SIZE;
+	if (outY) *outY = INV4_BG_Y + INV4_CELL_OFFSET_Y + row * INV4_CELL_SIZE;
+}
+
+// ---------- 1줄 퀵슬롯 그리기 (비트맵만) ----------
+void DrawQuickSlot(HDC hDC) {
+	HDC memDC = CreateCompatibleDC(hDC);
+
+	// 배경 패널 (inventory_1.bmp)
+	if (g_hBitmap_inv_quick != NULL) {
+		HBITMAP oldB = (HBITMAP)SelectObject(memDC, g_hBitmap_inv_quick);
+		TransparentBlt(hDC,
+			QUICKSLOT_BG_X, QUICKSLOT_BG_Y, QUICKSLOT_BG_W, QUICKSLOT_BG_H,
+			memDC, 0, 0, QUICKSLOT_BG_W, QUICKSLOT_BG_H,
+			EXT_TRANSPARENT);
+		SelectObject(memDC, oldB);
+	}
+
+	// 슬롯 4칸 아이콘
+	for (int i = 0; i < QUICKSLOT_COUNT; i++) {
+		int ix, iy;
+		GetQuickSlotRect(i, &ix, &iy);
+		HBITMAP src = GetToolIconBitmap(g_quickSlot[i]);
+		if (src != NULL) {
+			HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
+			TransparentBlt(hDC, ix, iy, QUICKSLOT_ICON_SIZE, QUICKSLOT_ICON_SIZE,
+				memDC, 0, 0, QUICKSLOT_ICON_SIZE, QUICKSLOT_ICON_SIZE,
+				EXT_TRANSPARENT);
+			SelectObject(memDC, oldB);
+		}
+		// 선택된 슬롯은 동일 아이콘을 한 번 더 살짝 옆으로 겹쳐 그려 '하이라이트' 표현
+		// (도형 사용 금지 규칙 준수: 빨간 사각형 테두리 못 그리니, 선택 표시는 아이콘 자체로)
+		if (g_selectedQuickSlot == i && src != NULL) {
+			HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
+			// 위에 한 번 더 살짝 위로
+			TransparentBlt(hDC, ix, iy - 4, QUICKSLOT_ICON_SIZE, QUICKSLOT_ICON_SIZE,
+				memDC, 0, 0, QUICKSLOT_ICON_SIZE, QUICKSLOT_ICON_SIZE,
+				EXT_TRANSPARENT);
+			SelectObject(memDC, oldB);
+		}
+	}
+
+	// 가방 아이콘 (1줄 옆에 붙여서)
+	if (g_hBitmap_inv_bag != NULL) {
+		HBITMAP oldB = (HBITMAP)SelectObject(memDC, g_hBitmap_inv_bag);
+		TransparentBlt(hDC, BAG_X, BAG_Y, BAG_W, BAG_H,
+			memDC, 0, 0, BAG_W, BAG_H,
+			EXT_TRANSPARENT);
+		SelectObject(memDC, oldB);
+	}
+
+	DeleteDC(memDC);
+}
+
+// ---------- 4x4 인벤토리 (비트맵만, 열렸을 때만) ----------
+void DrawInventoryPanel(HDC hDC) {
+	if (!g_isInventoryOpen) return;
+	HDC memDC = CreateCompatibleDC(hDC);
+
+	// 배경 패널 (inventory_4.bmp 300x300)
+	if (g_hBitmap_inv_main != NULL) {
+		HBITMAP oldB = (HBITMAP)SelectObject(memDC, g_hBitmap_inv_main);
+		TransparentBlt(hDC, INV4_BG_X, INV4_BG_Y, INV4_BG_W, INV4_BG_H,
+			memDC, 0, 0, INV4_BG_W, INV4_BG_H,
+			EXT_TRANSPARENT);
+		SelectObject(memDC, oldB);
+	}
+
+	// 16칸 아이템
+	for (int i = 0; i < INV4_COUNT; i++) {
+		int ix, iy;
+		GetInv4CellRect(i, &ix, &iy);
+		HBITMAP src = GetToolIconBitmap(g_inv4[i]);
+		if (src != NULL) {
+			HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
+			TransparentBlt(hDC, ix, iy, QUICKSLOT_ICON_SIZE, QUICKSLOT_ICON_SIZE,
+				memDC, 0, 0, QUICKSLOT_ICON_SIZE, QUICKSLOT_ICON_SIZE,
+				EXT_TRANSPARENT);
+			SelectObject(memDC, oldB);
+		}
+		// 선택된 셀: 아이콘을 위로 살짝 띄워 하이라이트
+		if (g_selectedInv4 == i && src != NULL) {
+			HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
+			TransparentBlt(hDC, ix, iy - 4, QUICKSLOT_ICON_SIZE, QUICKSLOT_ICON_SIZE,
+				memDC, 0, 0, QUICKSLOT_ICON_SIZE, QUICKSLOT_ICON_SIZE,
+				EXT_TRANSPARENT);
+			SelectObject(memDC, oldB);
+		}
+	}
+
+	DeleteDC(memDC);
+}
+
+// ---------- 가방 아이콘 클릭 판정 ----------
+static bool IsClickInBag(int mx, int my) {
+	return (mx >= BAG_X && mx < BAG_X + BAG_W &&
+		    my >= BAG_Y && my < BAG_Y + BAG_H);
+}
+
+// 퀵슬롯 어느 슬롯 클릭? (-1이면 슬롯 아님)
+static int HitQuickSlot(int mx, int my) {
+	for (int i = 0; i < QUICKSLOT_COUNT; i++) {
+		int ix, iy;
+		GetQuickSlotRect(i, &ix, &iy);
+		if (mx >= ix && mx < ix + QUICKSLOT_ICON_SIZE &&
+			my >= iy && my < iy + QUICKSLOT_ICON_SIZE) return i;
+	}
+	return -1;
+}
+
+// 4x4 어느 셀 클릭? (-1이면 셀 아님)
+static int HitInv4Cell(int mx, int my) {
+	if (!g_isInventoryOpen) return -1;
+	for (int i = 0; i < INV4_COUNT; i++) {
+		int ix, iy;
+		GetInv4CellRect(i, &ix, &iy);
+		if (mx >= ix && mx < ix + QUICKSLOT_ICON_SIZE &&
+			my >= iy && my < iy + QUICKSLOT_ICON_SIZE) return i;
+	}
+	return -1;
+}
+
+// ---------- 클릭이 UI 영역(퀵슬롯/가방/열린 인벤토리) 위에 있는가 ----------
+static bool IsClickOnUI(int mx, int my) {
+	if (mx >= QUICKSLOT_BG_X && mx < QUICKSLOT_BG_X + QUICKSLOT_BG_W &&
+		my >= QUICKSLOT_BG_Y && my < QUICKSLOT_BG_Y + QUICKSLOT_BG_H) return true;
+	if (IsClickInBag(mx, my)) return true;
+	if (g_isInventoryOpen &&
+		mx >= INV4_BG_X && mx < INV4_BG_X + INV4_BG_W &&
+		my >= INV4_BG_Y && my < INV4_BG_Y + INV4_BG_H) return true;
+	return false;
+}
+
+// 퀵슬롯 i번 도구를 현재 도구로 선택
+static void SelectQuickSlot(int i) {
+	if (i < 0 || i >= QUICKSLOT_COUNT) return;
+	g_selectedQuickSlot = i;
+	g_currentTool = g_quickSlot[i]; // TOOL_NONE 일 수도 (빈 슬롯)
+}
+
+// 4x4 -> 퀵슬롯 4번에 장착 (스와핑)
+static void EquipInv4ToQuickslot(int inv4Idx, int quickIdx) {
+	if (inv4Idx < 0 || inv4Idx >= INV4_COUNT) return;
+	if (quickIdx < 0 || quickIdx >= QUICKSLOT_COUNT) return;
+	ToolType a = g_inv4[inv4Idx];
+	ToolType b = g_quickSlot[quickIdx];
+	g_quickSlot[quickIdx] = a;
+	g_inv4[inv4Idx] = b;
+	g_selectedInv4 = -1;
+}
+
+// ---------- 마우스 → 농사 상호작용 ----------
+void HandleFarmClick(int mx, int my) {
+	int worldX = mx + cameraX;
+	int worldY = my + cameraY;
+	int gridX = worldX / TILE_SIZE;
+	int gridY = worldY / TILE_SIZE;
+	if (gridX < 0 || gridX >= MAP_TILE_W) return;
+	if (gridY < 0 || gridY >= MAP_TILE_H) return;
+
+	// 플레이어 주변 거리(1~2칸)
+	int playerGX = (g_player.x + g_player.w / 2) / TILE_SIZE;
+	int playerGY = (g_player.y + g_player.h / 2) / TILE_SIZE;
+	int dist = TileChebyshevDist(gridX, gridY, playerGX, playerGY);
+	if (dist > 2) return;
+
+	// 도구별 상태 변경
+	if (g_currentTool == TOOL_HOE && farmState[gridY][gridX] == 0) {
+		farmState[gridY][gridX] = 1; // 경작
+	}
+	else if (g_currentTool == TOOL_WATER && farmState[gridY][gridX] == 1) {
+		farmState[gridY][gridX] = 2; // 물주기
+	}
+}
+
+// ---------- 도끼로 나무 벌목 시도 ----------
+// 클릭한 위치(월드 좌표)에 있는 나무를 찾아 HP 깎고, 0이면 벌목.
+// 플레이어 주변 일정 거리 안의 나무만 가능.
+static void TryChopTree(int mx, int my) {
+	if (g_currentTool != TOOL_AXE) return;
+	int worldX = mx + cameraX;
+	int worldY = my + cameraY;
+
+	int playerCX = g_player.x + g_player.w / 2;
+	int playerCY = g_player.y + g_player.h / 2;
+
+	for (size_t i = 0; i < g_trees.size(); i++) {
+		Tree& t = g_trees[i];
+		if (!t.isAlive) continue;
+		// 클릭이 나무 영역 안인지
+		if (worldX < t.x || worldX >= t.x + t.w) continue;
+		if (worldY < t.y || worldY >= t.y + t.h) continue;
+		// 플레이어와 나무 중심 거리 (픽셀) 제한
+		int treeCX = t.x + t.w / 2;
+		int treeCY = t.y + t.h - 10;
+		int dx = playerCX - treeCX;
+		int dy = playerCY - treeCY;
+		int sqDist = dx * dx + dy * dy;
+		if (sqDist > 120 * 120) return; // 너무 멀면 무시
+		// HP 감소
+		t.hp--;
+		if (t.hp <= 0) t.isAlive = false;
+		return; // 한 번 클릭에 한 그루만
+	}
+}
 
 // 낚시터 타일맵 
 // 타일 1개 = 16x16px, 맵 40x40타일 = 640x640px
@@ -355,8 +938,36 @@ void UpdatePlayer() {
 		g_player.y = nextY;
 	}
 	else {
-		g_player.x += dx;
-		g_player.y += dy;
+		// [확장] 농장 씬: 절벽(좌상단 ㄷ자) 영역 충돌 처리
+		if (g_currentScene == SCENE_FARM) {
+			int footOffX = g_player.w / 4;
+			int footOffY = g_player.h * 3 / 4;
+			int footW = g_player.w / 2;
+			int footH = g_player.h / 4;
+
+			// 안전장치: 이미 절벽 안에 끼어있으면 충돌 무시 (탈출 허용)
+			bool alreadyInside = IsBlockedByCliff(
+				g_player.x + footOffX, g_player.y + footOffY, footW, footH);
+
+			int nextX = g_player.x + dx;
+			if (!alreadyInside &&
+				IsBlockedByCliff(nextX + footOffX, g_player.y + footOffY, footW, footH)) {
+				nextX = g_player.x;
+				dx = 0;
+			}
+			int nextY = g_player.y + dy;
+			if (!alreadyInside &&
+				IsBlockedByCliff(nextX + footOffX, nextY + footOffY, footW, footH)) {
+				nextY = g_player.y;
+				dy = 0;
+			}
+			g_player.x = nextX;
+			g_player.y = nextY;
+		}
+		else {
+			g_player.x += dx;
+			g_player.y += dy;
+		}
 	}
 
 	// 마지막으로 바라본 방향 갱신 (좌우 우선)
@@ -385,11 +996,17 @@ void UpdatePlayer() {
 		g_player.frameTimer = 0;
 	}
 
-	// 화면 경계 충돌 처리 
-	if (g_player.x < 0) g_player.x = 0;
-	if (g_player.y < 0) g_player.y = 0;
-	if (g_player.x + g_player.w > CLIENT_W) g_player.x = CLIENT_W - g_player.w;
-	if (g_player.y + g_player.h > CLIENT_H) g_player.y = CLIENT_H - g_player.h;
+	// 맵 경계 클램프 (씬에 따라 다른 맵 사이즈 사용)
+	// - SCENE_FARM: 1280x1280 맵
+	// - 그 외 (낚시 등): 800x800 화면
+	{
+		int maxX = (g_currentScene == SCENE_FARM) ? MAP_PIXEL_W : CLIENT_W;
+		int maxY = (g_currentScene == SCENE_FARM) ? MAP_PIXEL_H : CLIENT_H;
+		if (g_player.x < 0) g_player.x = 0;
+		if (g_player.y < 0) g_player.y = 0;
+		if (g_player.x + g_player.w > maxX) g_player.x = maxX - g_player.w;
+		if (g_player.y + g_player.h > maxY) g_player.y = maxY - g_player.h;
+	}
 
 	// 씬 전환 쿨다운
 	if (g_sceneCooldown > 0) {
@@ -406,6 +1023,23 @@ void UpdatePlayer() {
 		g_player.y = 5 * FISHING_TILE_SCREEN - g_player.h / 2;
 		g_player.dir = DIR_RIGHT;
 		g_sceneCooldown = 30;
+	}
+
+	// [확장] 친구 맵 포탈 트리거: 우측 상단 흙길 끝 (worldX>1200 && worldY<250)
+	if (g_currentScene == SCENE_FARM) {
+		int footCX = g_player.x + g_player.w / 2;
+		int footCY = g_player.y + g_player.h / 2;
+		if (footCX > PORTAL_X_THRESHOLD && footCY < PORTAL_Y_THRESHOLD) {
+			if (!g_portalTriggered) {
+				g_portalTriggered = true;
+				OutputDebugString(TEXT("[PORTAL] 친구 맵으로 이동!\n"));
+				//MessageBox(NULL, TEXT("친구 맵으로 이동!"), TEXT("포탈"), MB_OK);
+			}
+		}
+		else {
+			// 포탈 영역에서 벗어나면 트리거 리셋 (재진입 가능)
+			g_portalTriggered = false;
+		}
 	}
 
 	// 농장 가는 길에 닿으면 SCENE_FARM으로 전환 (타일 7 기반)
@@ -804,19 +1438,46 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		// (파일명: 농장배경.bmp - 공백 없음. 위치: Project1\이미지소스\농장\)
 		hBitmap_farm = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\농장배경.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
-		// 채집물/집 비트맵 로드 (마젠타 투명)
-		g_hBitmap_trees  = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\Trees.bmp"),        IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_forest = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\forest asset.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_house  = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\House.bmp"),        IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		// ----- [확장 시스템] 추가 리소스 로드 + 초기화 -----
+		g_hBitmap_map        = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\background\\map.bmp"),         IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_house      = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\집\\house.bmp"),                     IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_tree1      = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\tree\\Tree1_118x140.bmp"),     IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_tree2      = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\tree\\Tree2_56x72.bmp"),       IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_tree3      = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\tree\\Tree3_50x62.bmp"),       IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_cultivated = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\farming\\cultivated_land.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_wet        = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\farming\\wet_ground.bmp"),     IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_icon_hoe   = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\icon_hoe.bmp"),           IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_icon_water = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\icon_water.bmp"),         IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_icon_pole  = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\fishing pole.bmp"),       IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_inv_quick  = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\inventory\\inventory_1.bmp"),   IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_inv_main   = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\inventory\\inventory_4.bmp"),   IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_inv_bag    = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\inventory\\Inventory.bmp"),     IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
-		// 농장 씬 시작 시 채집물 랜덤 스폰
-		InitHarvestables();
+		InitTrees();
+		g_house.x = 600; g_house.y = 350;   // 절대 좌표 고정 (흙길 끝 빨간 영역)
+		g_house.currentFrame = 0; g_house.frameTimer = 0;
+		g_house.isDoorOpening = false; g_house.doorAnimDone = false;
+		cameraX = 0; cameraY = 0;
+		g_currentTool = TOOL_NONE;
+		g_isInventoryOpen = false;
+		g_selectedQuickSlot = -1;
+		g_selectedInv4 = -1;
+		// 퀵슬롯 초기 구성 재확인 (1=HOE, 2=WATER, 3=POLE, 4=빈)
+		g_quickSlot[0] = TOOL_HOE;
+		g_quickSlot[1] = TOOL_WATER;
+		g_quickSlot[2] = TOOL_POLE;
+		g_quickSlot[3] = TOOL_NONE;
+		// 4x4: 0번 칸에 도끼 1개 시드
+		for (int kk = 0; kk < INV4_COUNT; kk++) g_inv4[kk] = TOOL_NONE;
+		g_inv4[0] = TOOL_AXE;
+		for (int rr = 0; rr < MAP_TILE_H; rr++)
+			for (int cc = 0; cc < MAP_TILE_W; cc++) farmState[rr][cc] = 0;
 
 		// 플레이어 이미지 로드 (아래 base/base_arm 로드에서 수행)
 
 		//씬/플레이어 초기화
 		g_currentScene = SCENE_FARM;
-		g_player.x = 380; g_player.y = 380;
+		g_player.x = 700; g_player.y = 700;  // 절벽 RECT(0,0~600,450) 밖에서 시작
 		g_player.w = PLAYER_DISPLAY_W;
 		g_player.h = PLAYER_DISPLAY_H;
 		g_player.speed = 4;
@@ -933,22 +1594,44 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				DeleteObject(bg);
 			}
 
-			// (트리거 안내 박스/텍스트는 화면에 그리지 않음 - 충돌 판정만 동작)
+			// 낚시터 트리거 안내
+			DrawFishTriggerHint(backDC);
 
-			// 집 (House.bmp)
-			DrawHouse(backDC);
+			if (g_hBitmap_map != NULL) {
+				HDC hMapDC = CreateCompatibleDC(backDC);
+				HBITMAP hOldMap = (HBITMAP)SelectObject(hMapDC, g_hBitmap_map);
+				BitBlt(backDC, 0, 0, CLIENT_W, CLIENT_H,
+					hMapDC, cameraX, cameraY, SRCCOPY);
+				SelectObject(hMapDC, hOldMap);
+				DeleteDC(hMapDC);
+			}
 
-			// 채집물 (나무 / 숲 에셋) — SCENE_FARM 안에서만 그림
-			DrawHarvestables(backDC);
 
-			// 플레이어 (스프라이트 or 도형)
-			DrawPlayer(backDC);
+			DrawFarmTiles(backDC);
+
+
+			DrawTrees(backDC);
+			DrawHouseAnimated(backDC);
+
+
+			{
+				int savedX = g_player.x, savedY = g_player.y;
+				g_player.x -= cameraX;
+				g_player.y -= cameraY;
+				DrawPlayer(backDC);
+				g_player.x = savedX;
+				g_player.y = savedY;
+			}
 
 			// 안내
 			SetBkMode(backDC, TRANSPARENT);
 			SetTextColor(backDC, RGB(255, 255, 255));
-			const wchar_t* info = L"[농장] 방향키/WASD 이동, 오른쪽 위 길→낚시터, 집 문→상점";
+			const wchar_t* info = L"[농장] 방향키/WASD 이동, 1/2/3 도구, E 인벤토리";
 			TextOut(backDC, 10, 10, info, (int)wcslen(info));
+
+			// ----- [확장] UI (화면 고정, 최상단) -----
+			DrawQuickSlot(backDC);
+			DrawInventoryPanel(backDC);
 			break;
 		}
 
@@ -1038,6 +1721,65 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 
 	case WM_LBUTTONDOWN:
 	{
+
+		if (g_currentScene == SCENE_FARM) {
+			int mx = LOWORD(lParam);
+			int my = HIWORD(lParam);
+
+			// 1) 가방 아이콘 클릭 → 인벤토리 토글
+			if (IsClickInBag(mx, my)) {
+				g_isInventoryOpen = !g_isInventoryOpen;
+				g_selectedInv4 = -1;
+				InvalidateRect(hWnd, NULL, FALSE);
+				break;
+			}
+
+			// 2) 4x4 인벤토리 셀 클릭 (열려있을 때)
+			if (g_isInventoryOpen) {
+				int cell = HitInv4Cell(mx, my);
+				if (cell >= 0) {
+					// 빈 셀은 선택하지 않음
+					if (g_inv4[cell] != TOOL_NONE) g_selectedInv4 = cell;
+					InvalidateRect(hWnd, NULL, FALSE);
+					break;
+				}
+			}
+
+			// 3) 퀵슬롯 클릭
+			int qs = HitQuickSlot(mx, my);
+			if (qs >= 0) {
+				// 4번째(빈 슬롯) + 4x4에서 선택된 아이템 있으면 → 스와핑
+				if (qs == 3 && g_selectedInv4 >= 0) {
+					EquipInv4ToQuickslot(g_selectedInv4, qs);
+				}
+				else {
+					// 그 외엔 도구 선택
+					SelectQuickSlot(qs);
+				}
+				InvalidateRect(hWnd, NULL, FALSE);
+				break;
+			}
+
+			// 4) UI 다른 영역(배경 패널 등)은 그냥 흡수
+			if (IsClickOnUI(mx, my)) {
+				InvalidateRect(hWnd, NULL, FALSE);
+				break;
+			}
+
+			// 5) 맵 클릭 처리 (인벤토리 닫혀있을 때만)
+			if (!g_isInventoryOpen) {
+				// 도끼 들고 있으면 나무 벌목 시도
+				if (g_currentTool == TOOL_AXE) {
+					TryChopTree(mx, my);
+				}
+				else {
+					HandleFarmClick(mx, my);
+				}
+				InvalidateRect(hWnd, NULL, FALSE);
+				break;
+			}
+		}
+
 		if (g_fishingPhase == FISHING_PHASE_GAME) {
 			floatingGreenBar = true; // 낚시 게임 중 마우스 누르면 초록 게이지 올라감
 		}
@@ -1107,6 +1849,39 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 					}
 					else {
 						canFishing = false;
+					}
+				}
+				// [확장] 농장 씬에서는 카메라 따라가기 + 집 애니메이션 + 문열림 완료 시 SCENE_SHOP
+				if (g_currentScene == SCENE_FARM) {
+					UpdateCamera();
+					UpdateHouseAnim();
+
+					// 플레이어가 집 문 충돌박스에 들어오면 문 열기 시작
+					// 문 애니 시작: 캐릭터의 절대 좌표가 1타일 문 트리거 안에 있을 때만
+					if (!g_house.isDoorOpening &&
+						RectOverlap(g_player.x, g_player.y, g_player.w, g_player.h,
+							HOUSE_DOOR_X, HOUSE_DOOR_Y, HOUSE_DOOR_W, HOUSE_DOOR_H)) {
+						g_house.isDoorOpening = true;
+						g_house.currentFrame = 0;
+						g_house.frameTimer = 0;
+						g_house.doorAnimDone = false;
+						g_house.shopTransitionTimer = 0;
+					}
+					// 문 애니 끝나면 1초 카운트다운 시작 후 SCENE_SHOP으로 전환
+					if (g_house.doorAnimDone && g_sceneCooldown == 0) {
+						g_house.shopTransitionTimer++;
+						// WM_TIMER 0001 이 30ms 간격 → 약 33틱이면 1초
+						if (g_house.shopTransitionTimer >= 33) {
+							g_currentScene = SCENE_SHOP;
+							g_sceneCooldown = 30;
+							// 다음에 농장 돌아왔을 때 다시 문에 안 끼게 아래로 보냄
+							g_player.x = g_house.x + HOUSE_DRAW_W / 2 - g_player.w / 2;
+							g_player.y = g_house.y + HOUSE_DRAW_H + HOUSE_DOOR_H + 10;
+							g_house.isDoorOpening = false;
+							g_house.doorAnimDone = false;
+							g_house.currentFrame = 0;
+							g_house.shopTransitionTimer = 0;
+						}
 					}
 				}
 				InvalidateRect(hWnd, NULL, FALSE);
@@ -1237,7 +2012,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				isFishing = false;
 				g_fishingPhase = FISHING_PHASE_NONE;
 				floatingGreenBar = false;
-				// TODO: 낚시 실패 처리
+				//낚시 실패 처리
 				MessageBox(hWnd, TEXT("낚시 실패..."), TEXT("낚시"), MB_OK);
 			}
 
@@ -1256,8 +2031,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	}
 
 	case WM_KEYDOWN:
-		// [농장] 방향키/WASD 입력 (씬과 무관하게 상태만 기록 - 농장 씬에서만 UpdatePlayer가 사용)
+		// 방향키/WASD 입력 
 		switch (wParam) {
+		//  도구 단축키 / 인벤토리 토글 
+		case '1': SelectQuickSlot(0); break;
+		case '2': SelectQuickSlot(1); break;
+		case '3': SelectQuickSlot(2); break;
+		case '4': SelectQuickSlot(3); break;
+		case 'E': g_isInventoryOpen = !g_isInventoryOpen; g_selectedInv4 = -1; break;
 		case VK_LEFT:  case 'A': g_keyLeft = true;  break;
 		case VK_RIGHT: case 'D': g_keyRight = true; break;
 		case VK_UP:    case 'W': g_keyUp = true;    break;
@@ -1304,6 +2085,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpszCmdPa
 	WNDCLASSEX WndClass;
 	g_hInst = hInstance;
 
+	SetProcessDPIAware();
+
 	srand(time(NULL));
 
 	WndClass.cbSize = sizeof(WndClass);
@@ -1320,9 +2103,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpszCmdPa
 	WndClass.hIconSm = LoadIcon(NULL, IDI_APPLICATION);
 	RegisterClassEx(&WndClass);
 
-	hWnd = CreateWindow(lpszClass, lpszWindowName, WS_OVERLAPPEDWINDOW,
-		0, 0, 800, 800, NULL, (HMENU)NULL, hInstance, NULL);
+	RECT desiredRc = { 0, 0, CLIENT_W, CLIENT_H };
+	AdjustWindowRect(&desiredRc, WS_OVERLAPPEDWINDOW, FALSE);
+	int winW = desiredRc.right - desiredRc.left;
+	int winH = desiredRc.bottom - desiredRc.top;
 
+	hWnd = CreateWindow(lpszClass, lpszWindowName, WS_OVERLAPPEDWINDOW,
+		CW_USEDEFAULT, CW_USEDEFAULT, winW, winH, NULL, (HMENU)NULL, hInstance, NULL);
+	
 	ShowWindow(hWnd, nCmdShow);
 	UpdateWindow(hWnd);
 
