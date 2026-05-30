@@ -13,9 +13,10 @@ LPCTSTR lpszClass = L"Window Class";
 LPCTSTR lpszWindowName = L"windows program 1";
 
 enum GameScene {
-	SCENE_FARM = 0,    // 농장 화면 (조성현 담당)
-	SCENE_FISHING = 1, // 낚시 화면 (문선우 담당)
-	SCENE_SHOP = 2     // 상점 화면 (집 문으로 진입)
+	SCENE_FARM = 0,        // 농장 화면 (조성현 담당)
+	SCENE_FISHING = 1,     // 낚시 화면 (문선우 담당)
+	SCENE_FISHING_MAP = 1, // (별칭) 친구 낚시 맵
+	SCENE_SHOP = 2         // 상점 화면 (집 문으로 진입)
 };
 static GameScene g_currentScene = SCENE_FARM;
 
@@ -140,6 +141,26 @@ static RECT g_cliffRects[CLIFF_RECT_COUNT] = {
 	{ 0, 0, 630, 500 }
 };
 
+// ---------- 나무 스폰 금지 영역 (흙길 + 절벽 옆면) ----------
+// InitTrees 가 나무 배치할 때 이 RECT 안에 발 위치가 들어가면 거부.
+// 좌표 안 맞으면 left/top/right/bottom 만 조정. 영역 추가/제거하려면 COUNT 와 배열 길이 같이 맞춰주세요.
+#define NO_TREE_RECT_COUNT 5
+static RECT g_noTreeRects[NO_TREE_RECT_COUNT] = {
+	{   0, 420,  610, 480 },   // 좌측 절벽 아래 갈색 옆면 (가로 띠)
+	{ 870, 110, 1290, 270 },   // 우상단 흙길 (가로)
+	{ 950, 270, 1020, 700 },   // 우측 흙길 (세로)
+	{ 410, 660,  970, 720 },   // 가운데 흙길 (가로)
+	{ 410, 720,  480, 1290 },  // 아래쪽 흙길 (세로)
+};
+
+static bool PointInNoTreeArea(int x, int y) {
+	for (int i = 0; i < NO_TREE_RECT_COUNT; i++) {
+		RECT& r = g_noTreeRects[i];
+		if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return true;
+	}
+	return false;
+}
+
 // ---------- 친구 맵 포탈 트리거 (맵 우측 상단 흙길 끝) ----------
 // 사용자 지정: worldX > 1200 && worldY < 250 부근
 #define PORTAL_X_THRESHOLD  1200
@@ -173,7 +194,7 @@ struct AnimatedHouse {
 	bool doorAnimDone;       // 문 애니 끝남
 	int shopTransitionTimer; // 문 애니 끝난 후 씬 전환까지 카운트다운 (30ms tick 기준)
 };
-static AnimatedHouse g_house = { 600, 350, 0, 0, false, false, 0 };
+static AnimatedHouse g_house = { 705, 470, 0, 0, false, false, 0 };
 
 #define HOUSE_FRAME_W       96
 #define HOUSE_FRAME_H       96
@@ -184,7 +205,7 @@ static AnimatedHouse g_house = { 600, 350, 0, 0, false, false, 0 };
 
 // 집의 문 충돌 박스: 절대 좌표 기준 1타일(32x32), 집 바로 아래 (현관문 바로 앞)
 // 캐릭터의 worldX/worldY가 이 RECT 안일 때만 문 열림 애니 시작.
-#define HOUSE_DOOR_W       32
+#define HOUSE_DOOR_W       24
 #define HOUSE_DOOR_H       32
 #define HOUSE_DOOR_X       (g_house.x + (HOUSE_DRAW_W - HOUSE_DOOR_W) / 2)
 #define HOUSE_DOOR_Y       (g_house.y + HOUSE_DRAW_H)   // 집 바로 아래
@@ -326,6 +347,21 @@ static bool PointInHouseFootprint(int x, int y) {
 		    y >= g_house.y - 10 && y < g_house.y + HOUSE_DRAW_H + 10);
 }
 
+// 사각형이 집과 겹치는가 (이동 충돌 검사용 — 캐릭터가 집 위로 못 올라가게)
+// 집 192x192 통째로 막으면 좌우가 너무 답답하므로, 실제 집 본체만 좁게.
+// 좌/우 각 50px, 위 80px(지붕), 아래 10px 여유 → 92 x 102 영역만 차단.
+#define HOUSE_BLOCK_PAD_L   50
+#define HOUSE_BLOCK_PAD_R   50
+#define HOUSE_BLOCK_PAD_T   47
+#define HOUSE_BLOCK_PAD_B   10
+static bool IsBlockedByHouse(int px, int py, int pw, int ph) {
+	return RectOverlap(px, py, pw, ph,
+		g_house.x + HOUSE_BLOCK_PAD_L,
+		g_house.y + HOUSE_BLOCK_PAD_T,
+		HOUSE_DRAW_W - HOUSE_BLOCK_PAD_L - HOUSE_BLOCK_PAD_R,
+		HOUSE_DRAW_H - HOUSE_BLOCK_PAD_T - HOUSE_BLOCK_PAD_B);
+}
+
 // ---------- 나무 초기화: 절벽/집 피해서 15그루 ----------
 void InitTrees() {
 	g_trees.clear();
@@ -347,6 +383,7 @@ void InitTrees() {
 		int footY = t.y + t.h - 6;
 		if (PointInCliff(footX, footY)) bad = true;
 		if (PointInHouseFootprint(footX, footY)) bad = true;
+		if (PointInNoTreeArea(footX, footY)) bad = true;   // 흙길/벽 옆면 회피
 		// 다른 나무와 너무 겹쳐도 거부
 		for (size_t k = 0; k < g_trees.size() && !bad; k++) {
 			Tree& o = g_trees[k];
@@ -406,7 +443,8 @@ void UpdateHouseAnim() {
 	}
 	else {
 		// 0~3 굴뚝 연기 루프
-		g_house.currentFrame = (g_house.currentFrame + 1) % 4;
+		//g_house.currentFrame = (g_house.currentFrame + 1) % 4;
+		g_house.currentFrame = 0;   // 평상시엔 첫 프레임 고정
 	}
 }
 
@@ -469,10 +507,15 @@ static HBITMAP GetToolIconBitmap(ToolType t) {
 static void GetQuickSlotRect(int i, int* outX, int* outY) {
 	int slotPitch = QUICKSLOT_ICON_SIZE + QUICKSLOT_PAD;
 	int totalSlotsW = QUICKSLOT_COUNT * QUICKSLOT_ICON_SIZE + (QUICKSLOT_COUNT - 1) * QUICKSLOT_PAD;
-	int startX = QUICKSLOT_BG_X + (QUICKSLOT_BG_W - totalSlotsW) / 2;
+	int startX = QUICKSLOT_BG_X + (QUICKSLOT_BG_W - totalSlotsW) / 2 ;
 	int iconY = QUICKSLOT_BG_Y + (QUICKSLOT_BG_H - QUICKSLOT_ICON_SIZE) / 2;
 	if (outX) *outX = startX + i * slotPitch;
 	if (outY) *outY = iconY;
+
+	if (outX) {
+		*outX = startX + i * slotPitch;
+		if (i == 0) *outX -= 10;   // 호미 슬롯만 6px 더 왼쪽으로
+	}
 }
 
 // 4x4 i번 셀(0..15)의 화면 사각형 계산
@@ -647,6 +690,29 @@ void HandleFarmClick(int mx, int my) {
 
 	// 도구별 상태 변경
 	if (g_currentTool == TOOL_HOE && farmState[gridY][gridX] == 0) {
+		// 타일(32x32) 사각형이 흙길/절벽/집 등 금지 영역과 조금이라도 겹치면 거부.
+		// (클릭한 픽셀만 검사하면 타일 가장자리에서 한 픽셀이라도 잔디면 통과돼 흙길 위에 갈리는 문제 발생)
+		int tileLeft = gridX * TILE_SIZE;
+		int tileTop  = gridY * TILE_SIZE;
+		// 절벽
+		for (int i = 0; i < CLIFF_RECT_COUNT; i++) {
+			RECT& r = g_cliffRects[i];
+			if (RectOverlap(tileLeft, tileTop, TILE_SIZE, TILE_SIZE,
+				r.left, r.top, r.right - r.left, r.bottom - r.top)) return;
+		}
+		// 흙길/벽 옆면 (나무 스폰 금지 영역과 동일)
+		for (int i = 0; i < NO_TREE_RECT_COUNT; i++) {
+			RECT& r = g_noTreeRects[i];
+			if (RectOverlap(tileLeft, tileTop, TILE_SIZE, TILE_SIZE,
+				r.left, r.top, r.right - r.left, r.bottom - r.top)) return;
+		}
+		// 집 본체 (충돌 영역과 동일)
+		if (RectOverlap(tileLeft, tileTop, TILE_SIZE, TILE_SIZE,
+			g_house.x + HOUSE_BLOCK_PAD_L,
+			g_house.y + HOUSE_BLOCK_PAD_T,
+			HOUSE_DRAW_W - HOUSE_BLOCK_PAD_L - HOUSE_BLOCK_PAD_R,
+			HOUSE_DRAW_H - HOUSE_BLOCK_PAD_T - HOUSE_BLOCK_PAD_B)) return;
+
 		farmState[gridY][gridX] = 1; // 경작
 	}
 	else if (g_currentTool == TOOL_WATER && farmState[gridY][gridX] == 1) {
@@ -945,19 +1011,21 @@ void UpdatePlayer() {
 			int footW = g_player.w / 2;
 			int footH = g_player.h / 4;
 
-			// 안전장치: 이미 절벽 안에 끼어있으면 충돌 무시 (탈출 허용)
+			// 안전장치: 이미 절벽/집 안에 끼어있으면 충돌 무시 (탈출 허용)
 			bool alreadyInside = IsBlockedByCliff(
 				g_player.x + footOffX, g_player.y + footOffY, footW, footH);
 
 			int nextX = g_player.x + dx;
-			if (!alreadyInside &&
-				IsBlockedByCliff(nextX + footOffX, g_player.y + footOffY, footW, footH)) {
+			if (!alreadyInside && (
+				IsBlockedByCliff(nextX + footOffX, g_player.y + footOffY, footW, footH) ||
+				IsBlockedByHouse(nextX + footOffX, g_player.y + footOffY, footW, footH))) {
 				nextX = g_player.x;
 				dx = 0;
 			}
 			int nextY = g_player.y + dy;
-			if (!alreadyInside &&
-				IsBlockedByCliff(nextX + footOffX, nextY + footOffY, footW, footH)) {
+			if (!alreadyInside && (
+				IsBlockedByCliff(nextX + footOffX, nextY + footOffY, footW, footH) ||
+				IsBlockedByHouse(nextX + footOffX, nextY + footOffY, footW, footH))) {
 				nextY = g_player.y;
 				dy = 0;
 			}
@@ -1025,20 +1093,18 @@ void UpdatePlayer() {
 		g_sceneCooldown = 30;
 	}
 
-	// [확장] 친구 맵 포탈 트리거: 우측 상단 흙길 끝 (worldX>1200 && worldY<250)
-	if (g_currentScene == SCENE_FARM) {
+	// [확장] 친구 맵 포탈 트리거: 우측 상단 흙길 끝 (worldX > 1200)
+	// 메시지 박스 없이 즉시 SCENE_FISHING(친구 낚시 맵)으로 워프.
+	if (g_currentScene == SCENE_FARM && g_sceneCooldown == 0) {
 		int footCX = g_player.x + g_player.w / 2;
-		int footCY = g_player.y + g_player.h / 2;
-		if (footCX > PORTAL_X_THRESHOLD && footCY < PORTAL_Y_THRESHOLD) {
-			if (!g_portalTriggered) {
-				g_portalTriggered = true;
-				OutputDebugString(TEXT("[PORTAL] 친구 맵으로 이동!\n"));
-				//MessageBox(NULL, TEXT("친구 맵으로 이동!"), TEXT("포탈"), MB_OK);
-			}
-		}
-		else {
-			// 포탈 영역에서 벗어나면 트리거 리셋 (재진입 가능)
-			g_portalTriggered = false;
+		if (footCX > PORTAL_X_THRESHOLD) {
+			OutputDebugString(TEXT("[PORTAL] 친구 맵으로 즉시 워프\n"));
+			g_currentScene = SCENE_FISHING;   // = SCENE_FISHING_MAP (친구 낚시 맵)
+			cameraX = 0; cameraY = 0;          // 친구 맵 카메라 초기화
+			g_player.x = 100;
+			g_player.y = 600;
+			g_player.dir = DIR_RIGHT;
+			g_sceneCooldown = 30;
 		}
 	}
 
@@ -1454,7 +1520,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		g_hBitmap_inv_bag    = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\inventory\\Inventory.bmp"),     IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		InitTrees();
-		g_house.x = 600; g_house.y = 350;   // 절대 좌표 고정 (흙길 끝 빨간 영역)
+		g_house.x = 705; g_house.y = 470;   // 절대 좌표 고정 (흙길 끝 빨간 영역)
 		g_house.currentFrame = 0; g_house.frameTimer = 0;
 		g_house.isDoorOpening = false; g_house.doorAnimDone = false;
 		cameraX = 0; cameraY = 0;
@@ -1610,8 +1676,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			DrawFarmTiles(backDC);
 
 
-			DrawTrees(backDC);
+			// 그리기 순서: 집 먼저 → 나무 나중 (나무가 집 앞에 그려져 자연스럽게)
 			DrawHouseAnimated(backDC);
+			DrawTrees(backDC);
 
 
 			{
@@ -1637,7 +1704,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 
 		case SCENE_FISHING:
 		{
-			// 낚시 씬 배경 
+			// 낚시 씬 배경 — 농장과 동일한 카메라 오프셋 1:1 BitBlt 방식 (200% 확대 비율 통일)
+			// fishingmap_1280x1280.bmp 가 1280x1280 원본이므로 그대로 cameraX/Y 만큼 잘라 화면에 표시
 			if (!hBitmap_fishingGround) {
 				HBRUSH seaBrush = CreateSolidBrush(RGB(60, 110, 170));
 				RECT seaRect = { 0, 0, CLIENT_W, CLIENT_H };
@@ -1646,12 +1714,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			}
 			else {
 				HDC hFishingDC = CreateCompatibleDC(backDC);
-				HBITMAP hOldFarm = (HBITMAP)SelectObject(hFishingDC, hBitmap_fishingGround);
-				SetStretchBltMode(backDC, HALFTONE);
-				StretchBlt(backDC, 0, 0, CLIENT_W, CLIENT_H,
-					hFishingDC, 0, 0, 1280, 1280,
+				HBITMAP hOldFishing = (HBITMAP)SelectObject(hFishingDC, hBitmap_fishingGround);
+				BitBlt(backDC, 0, 0, CLIENT_W, CLIENT_H,
+					hFishingDC, cameraX, cameraY,
 					SRCCOPY);
-				SelectObject(hFishingDC, hOldFarm);
+				SelectObject(hFishingDC, hOldFishing);
 				DeleteDC(hFishingDC);
 			}
 
@@ -1851,9 +1918,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 						canFishing = false;
 					}
 				}
-				// [확장] 농장 씬에서는 카메라 따라가기 + 집 애니메이션 + 문열림 완료 시 SCENE_SHOP
-				if (g_currentScene == SCENE_FARM) {
+				// [확장] 카메라는 농장/낚시 양쪽 모두 따라가도록 통일 (200% 동일 비율)
+				if (g_currentScene == SCENE_FARM || g_currentScene == SCENE_FISHING) {
 					UpdateCamera();
+				}
+				// 농장 씬: 집 애니메이션 + 문열림 완료 시 SCENE_SHOP
+				if (g_currentScene == SCENE_FARM) {
 					UpdateHouseAnim();
 
 					// 플레이어가 집 문 충돌박스에 들어오면 문 열기 시작
@@ -1871,7 +1941,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 					if (g_house.doorAnimDone && g_sceneCooldown == 0) {
 						g_house.shopTransitionTimer++;
 						// WM_TIMER 0001 이 30ms 간격 → 약 33틱이면 1초
-						if (g_house.shopTransitionTimer >= 33) {
+						if (g_house.shopTransitionTimer >= 17) {
 							g_currentScene = SCENE_SHOP;
 							g_sceneCooldown = 30;
 							// 다음에 농장 돌아왔을 때 다시 문에 안 끼게 아래로 보냄
