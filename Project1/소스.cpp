@@ -163,8 +163,10 @@ static bool PointInNoTreeArea(int x, int y) {
 
 // ---------- 친구 맵 포탈 트리거 (맵 우측 상단 흙길 끝) ----------
 // 사용자 지정: worldX > 1200 && worldY < 250 부근
-#define PORTAL_X_THRESHOLD  1200
-#define PORTAL_Y_THRESHOLD   250
+#define PORTAL_X_MIN   1200
+#define PORTAL_X_MAX   1280
+#define PORTAL_Y_MIN     90
+#define PORTAL_Y_MAX    270
 static bool g_portalTriggered = false;   // 한 번 알리고 다시 안 알리도록
 
 // ---------- 동적 오브젝트: 나무 (3종) ----------
@@ -1097,7 +1099,9 @@ void UpdatePlayer() {
 	// 메시지 박스 없이 즉시 SCENE_FISHING(친구 낚시 맵)으로 워프.
 	if (g_currentScene == SCENE_FARM && g_sceneCooldown == 0) {
 		int footCX = g_player.x + g_player.w / 2;
-		if (footCX > PORTAL_X_THRESHOLD) {
+		int footCY = g_player.y + g_player.h / 2;
+		if (footCX >= PORTAL_X_MIN && footCX <= PORTAL_X_MAX &&
+			footCY >= PORTAL_Y_MIN && footCY <= PORTAL_Y_MAX) {
 			OutputDebugString(TEXT("[PORTAL] 친구 맵으로 즉시 워프\n"));
 			g_currentScene = SCENE_FISHING;   // = SCENE_FISHING_MAP (친구 낚시 맵)
 			cameraX = 0; cameraY = 0;          // 친구 맵 카메라 초기화
