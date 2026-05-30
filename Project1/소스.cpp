@@ -1717,10 +1717,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				DeleteObject(seaBrush);
 			}
 			else {
+				// 친구가 800x800 기준 좌표로 충돌/낚시영역을 잡아놨음.
+				// 그래서 1280 원본을 800에 stretch 해서 그리고, 카메라는 사용 안 함.
 				HDC hFishingDC = CreateCompatibleDC(backDC);
 				HBITMAP hOldFishing = (HBITMAP)SelectObject(hFishingDC, hBitmap_fishingGround);
-				BitBlt(backDC, 0, 0, CLIENT_W, CLIENT_H,
-					hFishingDC, cameraX, cameraY,
+				SetStretchBltMode(backDC, HALFTONE);
+				StretchBlt(backDC, 0, 0, CLIENT_W, CLIENT_H,
+					hFishingDC, 0, 0, 1280, 1280,
 					SRCCOPY);
 				SelectObject(hFishingDC, hOldFishing);
 				DeleteDC(hFishingDC);
@@ -1922,8 +1925,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 						canFishing = false;
 					}
 				}
-				// [확장] 카메라는 농장/낚시 양쪽 모두 따라가도록 통일 (200% 동일 비율)
-				if (g_currentScene == SCENE_FARM || g_currentScene == SCENE_FISHING) {
+				// [확장] 카메라는 농장에서만 사용. 친구 낚시 맵은 800x800 stretch 방식이라 카메라 불필요.
+				if (g_currentScene == SCENE_FARM) {
 					UpdateCamera();
 				}
 				// 농장 씬: 집 애니메이션 + 문열림 완료 시 SCENE_SHOP
