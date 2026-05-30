@@ -7,11 +7,10 @@
 #include <math.h>
 #include <wingdi.h>
 #pragma comment(lib, "msimg32.lib")
-
+//test.case1
 HINSTANCE g_hInst;
 LPCTSTR lpszClass = L"Window Class";
 LPCTSTR lpszWindowName = L"windows program 1";
-
 
 enum GameScene {
 	SCENE_FARM = 0,    // 농장 화면 (조성현 담당)
@@ -73,7 +72,7 @@ void 플레이어참고(HDC hDC, HBITMAP base[9], HBITMAP base_arm[])
 	HDC hFishDC = CreateCompatibleDC(hDC);
 	// 몸 베이스
 	SelectObject(hFishDC, base[3]);
-	TransparentBlt(hDC, 0, 0, 16, 28, hFishDC, 0, 0, 16, 28, RGB(255, 0, 255));
+	TransparentBlt(hDC, 0, 0, 160, 280, hFishDC, 0, 0, 16, 28, RGB(255, 0, 255));
 
 	//정면 팔
 	// SelectObject(hFishDC, base_arm[4]);
@@ -81,7 +80,7 @@ void 플레이어참고(HDC hDC, HBITMAP base[9], HBITMAP base_arm[])
 
 	// 옆면 팔
 	SelectObject(hFishDC, base_arm[9]);
-	TransparentBlt(hDC, 1, 5, 16, 14, hFishDC, 0, 0, 16, 14, RGB(255, 0, 255));
+	TransparentBlt(hDC, - 160, - 120, 440, 330, hFishDC, 0, 0, 44, 33, RGB(255, 0, 255));
 
 	DeleteDC(hFishDC);
 }
@@ -1147,10 +1146,8 @@ void DrawPlayer(HDC hDC) {
 	int armOffY = 20; // 원본과 동일
 
 	// 낚시 팔 크기 (임시) 
-	int dispFArmFrontW = 32; int dispFArmFrontH = 34; // 앞면 낚시팔 (16x17 → 2배)
-	int dispFArmSideW = 32; int dispFArmSideH = 28; // 옆면 낚시팔 (16x14 → 2배)
-	// 낚시 팔 X 오프셋 
-	int fishArmOffX = 0;
+	int dispFArmFrontW = 16*2; int dispFArmFrontH = 41*2; // 앞면 낚시팔 
+	int dispFArmSideW = 44*2; int dispFArmSideH = 33*2; // 옆면 낚시팔 
 
 	bool isFishingState = (g_fishingPhase != FISHING_PHASE_NONE);
 
@@ -1163,7 +1160,7 @@ void DrawPlayer(HDC hDC) {
 			// 낚시 팔 (옆면, 좌우반전)
 			if (g_player.fishing_arm[g_fishingArmIdx] != NULL) {
 				DrawFlipped(hDC, memDC, g_player.fishing_arm[g_fishingArmIdx],
-					x + fishArmOffX - 2, y + armOffY - 10, dispFArmSideW, dispFArmSideH, 16, 14);
+					x + 26, y - 24, dispFArmSideW, dispFArmSideH, 44, 33);
 			}
 		}
 		else {
@@ -1185,12 +1182,12 @@ void DrawPlayer(HDC hDC) {
 			if (g_player.fishing_arm[g_fishingArmIdx] != NULL) {
 				SelectObject(memDC, g_player.fishing_arm[g_fishingArmIdx]);
 				if (g_player.dir == DIR_DOWN) {
-					TransparentBlt(hDC, x + fishArmOffX, y + armOffY - 10, dispFArmFrontW, dispFArmFrontH,
-						memDC, 0, 0, 16, 17, RGB(255, 0, 255));
+					TransparentBlt(hDC, x, y - 14, dispFArmFrontW, dispFArmFrontH,
+						memDC, 0, 0, 16, 41, RGB(255, 0, 255));
 				}
 				else {
-					TransparentBlt(hDC, x + fishArmOffX + 2, y + armOffY - 10, dispFArmSideW, dispFArmSideH,
-						memDC, 0, 0, 16, 14, RGB(255, 0, 255));
+					TransparentBlt(hDC, x - 26, y - 24, dispFArmSideW, dispFArmSideH,
+						memDC, 0, 0, 44, 33, RGB(255, 0, 255));
 				}
 			}
 		}
@@ -1438,7 +1435,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	{
 	case WM_CREATE:
 		// 농장 배경 로드
-		hBitmap_farm = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\농장 배경.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		// (파일명: 농장배경.bmp - 공백 없음. 위치: Project1\이미지소스\농장\)
+		hBitmap_farm = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\농장배경.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		// ----- [확장 시스템] 추가 리소스 로드 + 초기화 -----
 		g_hBitmap_map        = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\background\\map.bmp"),         IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
@@ -1510,16 +1508,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		g_player.base_arm[6] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_후면1_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		g_player.base_arm[7] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_후면2_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		g_player.base_arm[8] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_arm_후면3_16x12.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_player.fishing_arm[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_앞면1_16x17.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_player.fishing_arm[1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_앞면2_16x17.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_player.fishing_arm[2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_앞면3_16x17.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_player.fishing_arm[3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_앞면4_16x17.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_player.fishing_arm[4] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_앞면5_16x17.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_player.fishing_arm[5] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면1_16x14.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_player.fishing_arm[6] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면2_16x14.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_player.fishing_arm[7] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면3_16x14.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_player.fishing_arm[8] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면4_16x14.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_player.fishing_arm[9] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면5_16x14.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_앞면1_16x41.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_앞면2_16x41.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_앞면3_16x41.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_앞면4_16x41.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[4] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_앞면5_16x41.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[5] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면1_44x33.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[6] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면2_44x33.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[7] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면3_44x33.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[8] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면4_44x33.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.fishing_arm[9] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_fishing_옆면5_44x33.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		//낚시 로드
 		hBitmap = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\fishingmap_640x640.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
@@ -1577,11 +1575,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		{
 			// 농장 배경 그리기 -- 백버퍼에 축소 출력
 			if (hBitmap_farm != NULL) {
+				// 농장배경.bmp 원본 사이즈 (실측: 2290x1856)
+				const int FARM_BG_SRC_W = 2290;
+				const int FARM_BG_SRC_H = 1856;
 				HDC hFarmDC = CreateCompatibleDC(backDC);
 				HBITMAP hOldFarm = (HBITMAP)SelectObject(hFarmDC, hBitmap_farm);
 				SetStretchBltMode(backDC, HALFTONE);
 				StretchBlt(backDC, 0, 0, CLIENT_W, CLIENT_H,
-					hFarmDC, 0, 0, 2288, 1856,
+					hFarmDC, 0, 0, FARM_BG_SRC_W, FARM_BG_SRC_H,
 					SRCCOPY);
 				SelectObject(hFarmDC, hOldFarm);
 				DeleteDC(hFarmDC);
@@ -1675,10 +1676,27 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			const wchar_t* hint = L"[낚시터] 좌클릭으로 낚시 시작";
 			TextOut(backDC, 10, 10, hint, (int)wcslen(hint));
 
-			//낚시 그리기 코드 
+			//낚시 그리기 코드
 			SelectObject(hMemDC, hBitmap);
 			if (g_fishingPhase == FISHING_PHASE_GAME)
 				FishingGameLogic(backDC, hBrush, oldBrush, hPen, oldPen, hBitmap_fishing, greenBar, targetFish, fishingGage);
+			break;
+		}
+
+		case SCENE_SHOP:
+		{
+			// 상점 씬: 임시 회색 배경 + 안내 텍스트
+			HBRUSH shopBg = CreateSolidBrush(RGB(120, 120, 120));
+			RECT r = { 0, 0, CLIENT_W, CLIENT_H };
+			FillRect(backDC, &r, shopBg);
+			DeleteObject(shopBg);
+
+			SetBkMode(backDC, TRANSPARENT);
+			SetTextColor(backDC, RGB(255, 255, 255));
+			const wchar_t* msg = L"상점 씬입니다";
+			TextOut(backDC, CLIENT_W / 2 - 60, CLIENT_H / 2 - 20, msg, (int)wcslen(msg));
+			const wchar_t* hint = L"(추후 상점 UI 구현 예정)";
+			TextOut(backDC, CLIENT_W / 2 - 90, CLIENT_H / 2 + 10, hint, (int)wcslen(hint));
 			break;
 		}
 		}
