@@ -48,6 +48,14 @@ enum PlayerDir {
 // 스프라이트 배경 투명색 (마젠타)
 #define PLAYER_SPRITE_TRANSPARENT   RGB(255, 0, 255)
 
+// 아이템 구조체
+struct Item {
+	int x, y;
+	int w, h;
+	int count; // 아이템 위 아래로 둥둥 부유하는거
+	HBITMAP hbitmap;
+};
+
 // 플레이어 구조체
 struct Player {
 	int x, y;          // 좌상단 좌표 (픽셀)
@@ -105,6 +113,45 @@ static bool g_keyDown = false;
 
 // 씬 전환 직후 같은 트리거에서 핑퐁 방지용 쿨다운
 static int g_sceneCooldown = 0;;
+
+// ── 물고기 아이템 ──
+enum FishItemType {
+	FISH_ITEM_NONE = 0,
+	FISH_ITEM_CARP = 1, // 잉어   (FISH_MOVE_RANDOM)
+	FISH_ITEM_PUFFER = 2, // 복어   (FISH_MOVE_FAST_UP)
+	FISH_ITEM_SQUID = 3, // 오징어 (FISH_MOVE_FAST_DOWN)
+	FISH_ITEM_BASS = 4  // 농어   (FISH_MOVE_IRREGULAR)
+};
+
+// 바닥에 떨어진 물고기 아이템
+struct DroppedFish {
+	int   worldX, worldY;   // 월드 좌표 중심
+	FishItemType type;
+	bool  active;
+	int   floatTimer;       // 부유 애니 카운터 (0~39 반복)
+	int   graceTick;        // 획득 유예 틱 카운터 (0.5초 = 5틱 @ 100ms)
+};
+static DroppedFish g_droppedFish = { 0, 0, FISH_ITEM_NONE, false, 0, 0 };
+// 유예 시간 (타이머 0001 기준 100ms/틱) — 이 값만 바꾸면 외부 조정 가능
+// 10 = 1.0초, 5 = 0.5초, 20 = 2.0초
+static int g_fishGraceTicks = 10;
+#define DROPPED_FISH_FLOAT_RANGE    3   // 위아래 최대 진폭 (픽셀)
+#define DROPPED_FISH_FLOAT_PERIOD  40   // 1사이클 틱 수
+
+// 물고기 아이템 인벤토리 (16칸, 별도 관리)
+#define FISH_INV_COUNT 16
+static FishItemType g_fishInv[FISH_INV_COUNT] = { FISH_ITEM_NONE, };
+
+// 물고기 인벤토리에 아이템 추가 (빈 칸에 넣기)
+static void AddFishToInventory(FishItemType type) {
+	for (int i = 0; i < FISH_INV_COUNT; i++) {
+		if (g_fishInv[i] == FISH_ITEM_NONE) {
+			g_fishInv[i] = type;
+			return;
+		}
+	}
+	// TODO: 인벤토리가 꽉 찼을 때 처리 (알림 등)
+}
 
 // ============================================================================
 // [확장 시스템] 카메라 / 절벽충돌 / 애니집 / 나무벌목 / 농사 / 인벤토리(스와핑)
@@ -293,6 +340,12 @@ static HBITMAP g_hBitmap_icon_pole = NULL;
 static HBITMAP g_hBitmap_inv_quick = NULL; // inventory_1.bmp 300x96
 static HBITMAP g_hBitmap_inv_main = NULL; // inventory_4.bmp 300x300
 static HBITMAP g_hBitmap_inv_bag = NULL; // Inventory.bmp 64x68
+
+// 물고기 아이템 비트맵 (바닥 드롭 및 인벤토리 표시용)
+// 이미지소스\\인벤토리\\Carp_48x48.bmp, Perch_48x48.bmp, Squid_48x48.bmp, Pufferfish_48x48.bmp
+static HBITMAP g_hBitmap_fishItem[5] = { NULL, }; // [0]=없음 [1]=잉어 [2]=복어 [3]=오징어 [4]=농어
+#define FISH_ITEM_DRAW_W  48
+#define FISH_ITEM_DRAW_H  48
 
 // 공용 투명색
 #define EXT_TRANSPARENT      RGB(255, 0, 255)
@@ -925,6 +978,33 @@ static TreeInfo g_treeInfos[3] = {
 	{ 9,  1,  56,  72,  56,  72 }, // Tree2: 35*1.6=56,  45*1.6=72
 	{ 10, 2,  50,  62,  51,  62 }, // Tree3: 32*1.6=51,  39*1.6=62
 };
+
+// ---------- 바닥에 떨어진 물고기 그리기 ----------
+static void DrawDroppedFish(HDC hDC) {
+	if (!g_droppedFish.active) return;
+	if (g_droppedFish.type == FISH_ITEM_NONE) return;
+	HBITMAP src = g_hBitmap_fishItem[g_droppedFish.type];
+	if (src == NULL) return;
+
+	// 부유 오프셋: sin 대신 타이머로 0→+3→0→-3→0 근사
+	// floatTimer 0~39: 0~9 올라감, 10~19 내려감, 20~29 내려감, 30~39 올라감
+	int ft = g_droppedFish.floatTimer;
+	int floatOff = 0;
+	if (ft < 10)       floatOff = -(ft * DROPPED_FISH_FLOAT_RANGE / 10);
+	else if (ft < 20)  floatOff = -((19 - ft) * DROPPED_FISH_FLOAT_RANGE / 10);
+	else if (ft < 30)  floatOff = (ft - 20) * DROPPED_FISH_FLOAT_RANGE / 10;
+	else               floatOff = (39 - ft) * DROPPED_FISH_FLOAT_RANGE / 10;
+
+	int sx = g_droppedFish.worldX - FISH_ITEM_DRAW_W / 2 - cameraX;
+	int sy = g_droppedFish.worldY - FISH_ITEM_DRAW_H / 2 + floatOff - cameraY;
+
+	HDC memDC = CreateCompatibleDC(hDC);
+	HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
+	TransparentBlt(hDC, sx, sy, FISH_ITEM_DRAW_W, FISH_ITEM_DRAW_H,
+		memDC, 0, 0, FISH_ITEM_DRAW_W, FISH_ITEM_DRAW_H, RGB(255, 0, 255));
+	SelectObject(memDC, oldB);
+	DeleteDC(memDC);
+}
 
 // drawBelow == true  : 플레이어 발보다 아래에 뿌리가 있는 나무 (플레이어 앞 → 나무가 플레이어를 가림)
 // drawBelow == false : 플레이어 발보다 위에 뿌리가 있는 나무  (플레이어 뒤 → 플레이어가 나무를 가림)
@@ -1592,6 +1672,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	static HBITMAP hBitmap;
 	static RECT rc;
 
+	// 아이템
+	static struct Item fishItem[50];
+	// 이미지소스\\인벤토리\\Carp_48x48.bmp
+	// 이미지소스\\인벤토리\\Perch_48x48.bmp
+	// 이미지소스\\인벤토리\\Squid_48x48.bmp
+	// 이미지소스\\인벤토리\\Pufferfish_48x48.bmp
+
 	// 농장 배경 (조성현 담당)
 	static HBITMAP hBitmap_farm; // 농장 풍경 배경 이미지
 
@@ -1726,6 +1813,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		hBitmap_fishing[3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\물었다_74x28.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		g_hBitmap_biteNotice = hBitmap_fishing[3]; // DrawPlayer에서 접근용
 
+		// 물고기 아이템 비트맵 로드
+		g_hBitmap_fishItem[FISH_ITEM_CARP] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\인벤토리\\Carp_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_fishItem[FISH_ITEM_PUFFER] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\인벤토리\\Pufferfish_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_fishItem[FISH_ITEM_SQUID] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\인벤토리\\Squid_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_fishItem[FISH_ITEM_BASS] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\인벤토리\\Perch_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+
 		hBitmap_fishingGround = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\fishingmap_1280x1280.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		hBitmap_fishTree[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\Tree1_118x140.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		hBitmap_fishTree[1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\Tree2_56x72.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
@@ -1856,11 +1949,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			// 플레이어 뒤에 있는 나무 먼저 (플레이어가 나무 앞에 서있는 경우)
 			DrawFishingTrees(backDC, hBitmap_fishTree, playerFootY, false);
 
+			// 바닥 물고기 아이템 (플레이어 뒤, 나무 앞)
+			DrawDroppedFish(backDC);
+
 			// 플레이어 (스프라이트 or 도형)
 			DrawPlayer(backDC);
 
 			// 플레이어 앞에 있는 나무 나중에 (나무가 플레이어를 가리는 경우)
 			DrawFishingTrees(backDC, hBitmap_fishTree, playerFootY, true);
+
+			// 툴바 및 인벤토리 (낚시 씬에서도 표시)
+			DrawQuickSlot(backDC);
+			DrawInventoryPanel(backDC);
 
 			SetBkMode(backDC, TRANSPARENT);
 			SetTextColor(backDC, RGB(255, 255, 255));
@@ -2082,6 +2182,28 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				}
 
 				UpdatePlayer();
+
+				// 바닥 물고기: 부유 애니 + 유예 + 플레이어 접촉 획득
+				if (g_droppedFish.active) {
+					g_droppedFish.floatTimer = (g_droppedFish.floatTimer + 1) % DROPPED_FISH_FLOAT_PERIOD;
+					if (g_droppedFish.graceTick < g_fishGraceTicks) {
+						g_droppedFish.graceTick++;
+					}
+					else {
+						int fishLeft = g_droppedFish.worldX - FISH_ITEM_DRAW_W / 2;
+						int fishTop = g_droppedFish.worldY - FISH_ITEM_DRAW_H / 2;
+						int playerFX = g_player.x + g_player.w / 4;
+						int playerFY = g_player.y + g_player.h * 3 / 4;
+						int playerFW = g_player.w / 2;
+						int playerFH = g_player.h / 4;
+						if (RectOverlap(fishLeft, fishTop, FISH_ITEM_DRAW_W, FISH_ITEM_DRAW_H,
+							playerFX, playerFY, playerFW, playerFH)) {
+							AddFishToInventory(g_droppedFish.type);
+							g_droppedFish.active = false;
+							g_droppedFish.type = FISH_ITEM_NONE;
+						}
+					}
+				}
 				// 낚시터 씬일 때 낚시 가능 여부 갱신 (발 기준)
 				if (g_currentScene == SCENE_FISHING) {
 					int footOffX = g_player.w / 4;
@@ -2250,8 +2372,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				isFishing = false;
 				g_fishingPhase = FISHING_PHASE_NONE;
 				floatingGreenBar = false;
-				// TODO: 아이템 드랍 처리 - targetFish.movementType 에 따라 다른 아이템 드랍
-				MessageBox(hWnd, TEXT("낚시 성공!"), TEXT("낚시"), MB_OK);
+
+				// movementType → 물고기 종류 결정
+				FishItemType droppedType = FISH_ITEM_CARP;
+				if (targetFish.movementType == FISH_MOVE_FAST_UP)   droppedType = FISH_ITEM_PUFFER;
+				if (targetFish.movementType == FISH_MOVE_FAST_DOWN)  droppedType = FISH_ITEM_SQUID;
+				if (targetFish.movementType == FISH_MOVE_IRREGULAR)  droppedType = FISH_ITEM_BASS;
+
+				// 플레이어 발 바로 아래에 드롭
+				g_droppedFish.worldX = g_player.x + g_player.w / 2;
+				g_droppedFish.worldY = g_player.y + g_player.h;
+				g_droppedFish.type = droppedType;
+				g_droppedFish.active = true;
+				g_droppedFish.floatTimer = 0;
+				g_droppedFish.graceTick = 0; // 유예 시작
 			}
 
 			if (fishingGage.current <= 0) {
