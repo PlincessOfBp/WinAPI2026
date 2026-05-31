@@ -1892,7 +1892,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		}
 		}
 
-		플레이어참고(backDC, g_player.base, g_player.farming_arm);
+		// 플레이어참고(backDC, g_player.base, g_player.farming_arm);
 
 		// 화면으로 한 번에 복사 
 		BitBlt(hDC, 0, 0, CLIENT_W, CLIENT_H, backDC, 0, 0, SRCCOPY);
