@@ -62,6 +62,7 @@ struct Player {
 	// arm 크기 16x12
 	HBITMAP base_arm[9]; // base와 동일.
 	HBITMAP fishing_arm[10]; // 0~4 앞, 5~9 옆, 낚시 시작할 때 01234 순으로 애니메이션 진행. 이후 낚시 기다림 시간 중 4 고정. 물고기 물어서 낚시 게임 진행할 때엔 0101 반복. 옆면도 똑같이 낚시 시작 시 56789 애니메이션 진행. 낚시 기다릴 때 9 고정. 물고기가 물어서 낚시 게임 진행중일 때 5656 애니메이션 반복. 오른쪽 방향 보고있음. 왼쪽 볼 땐 좌우반전 필요.
+	HBITMAP farming_arm[24]; // 0~4 앞 호미질, 5~9 옆 호미질, 10~14 앞 도끼질, 15~19 옆 도끼질, 20~21 앞 물뿌리개, 22~23 옆 물뿌리개. 01234 순으로 애니메이션 진행. 물뿌리개는 20 21 21, 22 23 23 처럼 뒤의 스프라이트가 더 오래 진행. 옆면은 오른쪽 보고있음. 좌우반전 필요. 뒷면은 앞면을 플레이어 몸 뒤에 그리기.
 };
 
 static Player g_player = { 380, 380, PLAYER_DISPLAY_W, PLAYER_DISPLAY_H, 4, DIR_DOWN, 0, 0, false };
@@ -75,13 +76,17 @@ void 플레이어참고(HDC hDC, HBITMAP base[9], HBITMAP base_arm[])
 	SelectObject(hFishDC, base[3]);
 	TransparentBlt(hDC, 0, 0, 160, 280, hFishDC, 0, 0, 16, 28, RGB(255, 0, 255));
 
-	//정면 팔
+	// 정면 팔 (호미 & 도끼)
 	// SelectObject(hFishDC, base_arm[4]);
-	// TransparentBlt(hDC, 0, 4, 16, 17, hFishDC, 0, 0, 16, 17, RGB(255, 0, 255));
+	// TransparentBlt(hDC, -80, -60, 320, 370, hFishDC, 0, 0, 32, 37, RGB(255, 0, 255));
 
-	// 옆면 팔
-	SelectObject(hFishDC, base_arm[9]);
-	TransparentBlt(hDC, -160, -120, 440, 330, hFishDC, 0, 0, 44, 33, RGB(255, 0, 255));
+	// 정면 & 옆면 팔 (물뿌리개)
+	SelectObject(hFishDC, base_arm[23]);
+	TransparentBlt(hDC, -20, -100, 200, 270, hFishDC, 0, 0, 20, 27, RGB(255, 0, 255));
+
+	// 옆면 팔 (호미 & 도끼)
+	// SelectObject(hFishDC, base_arm[9]);
+	// TransparentBlt(hDC, -70, -60, 320, 370, hFishDC, 0, 0, 32, 37, RGB(255, 0, 255));
 
 	DeleteDC(hFishDC);
 }
@@ -398,8 +403,8 @@ void InitTrees() {
 	}
 }
 
-// ---------- 나무 그리기 (3종 비트맵, 카메라 오프셋) ----------
-void DrawTrees(HDC hDC) {
+// ---------- 나무 그리기 (농장, 3종 비트맵, 카메라 오프셋) ----------
+void DrawFarmTrees(HDC hDC) {
 	if (g_trees.empty()) return;
 	HDC memDC = CreateCompatibleDC(hDC);
 
@@ -923,7 +928,7 @@ static TreeInfo g_treeInfos[3] = {
 
 // drawBelow == true  : 플레이어 발보다 아래에 뿌리가 있는 나무 (플레이어 앞 → 나무가 플레이어를 가림)
 // drawBelow == false : 플레이어 발보다 위에 뿌리가 있는 나무  (플레이어 뒤 → 플레이어가 나무를 가림)
-static void DrawTrees(HDC hDC, HBITMAP hBitmap_fishTree[3], int playerFootY, bool drawBelow) {
+static void DrawFishingTrees(HDC hDC, HBITMAP hBitmap_fishTree[3], int playerFootY, bool drawBelow) {
 	HDC memDC = CreateCompatibleDC(hDC);
 	int r, c, t;
 	for (r = 0; r < FISHING_MAP_ROWS; r++) {
@@ -972,7 +977,30 @@ static void DrawTrees(HDC hDC, HBITMAP hBitmap_fishTree[3], int playerFootY, boo
 }
 
 // 플레이어 한 프레임 업데이트
+// ---------- farming 도구 애니메이션 ----------
+// farming_arm: 0~4 앞 호미, 5~9 옆 호미, 10~14 앞 도끼, 15~19 옆 도끼, 20~21 앞 물뿌리개, 22~23 옆 물뿌리개
+// 시퀀스: 01234 (호미/도끼), 20 21 21 / 22 23 23 (물뿌리개)
+// 뒷면은 앞면 소스를 플레이어 몸 뒤에 그림
+static bool  g_isFarmingAnim = false; // 도구 애니메이션 진행 중
+static int   g_farmArmIdx = 0;     // 현재 farming_arm 인덱스
+static int   g_farmArmTimer = 0;     // 프레임 전환 카운터
+static int   g_farmArmSeqPos = 0;     // 시퀀스 내 현재 위치
+#define FARM_ARM_TICKS_PER_FRAME  5     // 프레임 하나당 유지 틱 수
+
+// 도구별 시퀀스 (앞면/옆면 각각)
+static int g_farmSeqHoeFront[5] = { 0,  1,  2,  3,  4 };
+static int g_farmSeqHoeSide[5] = { 5,  6,  7,  8,  9 };
+static int g_farmSeqAxeFront[5] = { 10, 11, 12, 13, 14 };
+static int g_farmSeqAxeSide[5] = { 15, 16, 17, 18, 19 };
+static int g_farmSeqWaterFront[3] = { 20, 21, 21 };
+static int g_farmSeqWaterSide[3] = { 22, 23, 23 };
+static int  g_farmSeqLen = 0;    // 현재 시퀀스 길이
+static int* g_farmSeqPtr = NULL; // 현재 시퀀스 포인터
+
 void UpdatePlayer() {
+	// farming 애니메이션 중에는 이동 불가
+	if (g_isFarmingAnim) return;
+
 	int dx = 0, dy = 0;
 	if (g_keyLeft)  dx -= g_player.speed;
 	if (g_keyRight) dx += g_player.speed;
@@ -1176,6 +1204,11 @@ static void DrawFlipped(HDC hDC, HDC memDC, HBITMAP bmp,
 	HDC flipDC = CreateCompatibleDC(hDC);
 	HBITMAP flipBmp = CreateCompatibleBitmap(hDC, srcW, srcH);
 	HBITMAP flipOld = (HBITMAP)SelectObject(flipDC, flipBmp);
+	// 배경을 마젠타로 채워야 TransparentBlt가 올바르게 투명 처리함
+	HBRUSH magentaBrush = CreateSolidBrush(RGB(255, 0, 255));
+	RECT fillRect = { 0, 0, srcW, srcH };
+	FillRect(flipDC, &fillRect, magentaBrush);
+	DeleteObject(magentaBrush);
 	SelectObject(memDC, bmp);
 	StretchBlt(flipDC, srcW - 1, 0, -srcW, srcH, memDC, 0, 0, srcW, srcH, SRCCOPY);
 	TransparentBlt(hDC, dstX, dstY, dstW, dstH, flipDC, 0, 0, srcW, srcH, RGB(255, 0, 255));
@@ -1196,8 +1229,8 @@ void DrawPlayer(HDC hDC) {
 
 	// 몸 인덱스 결정
 	int baseIdx = 0;
-	if (g_fishingPhase != FISHING_PHASE_NONE) {
-		// 낚시 중: 정지 프레임 고정 (앞면=0, 옆면=3, 후면=6)
+	if (g_fishingPhase != FISHING_PHASE_NONE || g_isFarmingAnim) {
+		// 낚시/farming 중: 정지 프레임 고정 (앞면=0, 옆면=3, 후면=6)
 		if (g_player.dir == DIR_DOWN)       baseIdx = 0;
 		else if (g_player.dir == DIR_UP)    baseIdx = 6;
 		else                                baseIdx = 3;
@@ -1223,20 +1256,42 @@ void DrawPlayer(HDC hDC) {
 
 	bool isFishingState = (g_fishingPhase != FISHING_PHASE_NONE);
 
+	// farming 팔 오프셋/크기 (참고함수 10배 기준 → 2배 환산)
+	// 호미/도끼 앞: (-80,-60) → (-16,-12), 32x37 → 64x74
+	// 호미/도끼 옆: (-70,-60) → (-14,-12), 32x37 → 64x74
+	// 물뿌리개: (-20,-100) → (-4,-20), 20x27 → 40x54
+	int farmArmHoeOffX_front = -16; int farmArmHoeOffY_front = -12;
+	int farmArmHoeOffX_side = -14; int farmArmHoeOffY_side = -12;
+	int farmArmWatOffX = -4; int farmArmWatOffY = -20;
+
 	if (g_player.dir == DIR_LEFT) {
-		// 몸 (좌우반전)
+		// 몸 (좌우반전) 먼저
 		DrawFlipped(hDC, memDC, g_player.base[baseIdx],
 			x, y, dispBodyW, dispBodyH, 16, 28);
 
 		if (isFishingState) {
-			// 낚시 팔 (옆면, 좌우반전)
 			if (g_player.fishing_arm[g_fishingArmIdx] != NULL) {
 				DrawFlipped(hDC, memDC, g_player.fishing_arm[g_fishingArmIdx],
 					x + 26, y - 24, dispFArmSideW, dispFArmSideH, 44, 33);
 			}
 		}
+		else if (g_isFarmingAnim) {
+			// 호미/도끼/물뿌리개 옆면 (좌우반전) — 몸 다음에 그려서 몸 앞에 나오게
+			if (g_currentTool == TOOL_HOE || g_currentTool == TOOL_AXE) {
+				if (g_player.farming_arm[g_farmArmIdx] != NULL) {
+					DrawFlipped(hDC, memDC, g_player.farming_arm[g_farmArmIdx],
+						x + farmArmHoeOffX_side, y + farmArmHoeOffY_side, 64, 74, 32, 37);
+				}
+			}
+			else if (g_currentTool == TOOL_WATER) {
+				if (g_player.farming_arm[g_farmArmIdx] != NULL) {
+					DrawFlipped(hDC, memDC, g_player.farming_arm[g_farmArmIdx],
+						x + farmArmWatOffX, y + farmArmWatOffY, 40, 54, 20, 27);
+				}
+			}
+		}
 		else {
-			// 일반 팔 — 원본과 동일 (좌우반전)
+			// 일반 걷기 팔 (좌우반전)
 			if (g_player.base_arm[baseIdx] != NULL) {
 				DrawFlipped(hDC, memDC, g_player.base_arm[baseIdx],
 					x, y + armOffY, dispArmW, dispArmH, 16, 12);
@@ -1244,13 +1299,30 @@ void DrawPlayer(HDC hDC) {
 		}
 	}
 	else {
+		// 뒷면: 앞면 소스를 몸 뒤(먼저)에 그림
+		if (g_player.dir == DIR_UP && g_isFarmingAnim) {
+			if (g_currentTool == TOOL_HOE || g_currentTool == TOOL_AXE) {
+				if (g_player.farming_arm[g_farmArmIdx] != NULL) {
+					SelectObject(memDC, g_player.farming_arm[g_farmArmIdx]);
+					TransparentBlt(hDC, x + farmArmHoeOffX_front, y + farmArmHoeOffY_front, 64, 74,
+						memDC, 0, 0, 32, 37, RGB(255, 0, 255));
+				}
+			}
+			else if (g_currentTool == TOOL_WATER) {
+				if (g_player.farming_arm[g_farmArmIdx] != NULL) {
+					SelectObject(memDC, g_player.farming_arm[g_farmArmIdx]);
+					TransparentBlt(hDC, x + farmArmWatOffX, y + farmArmWatOffY, 40, 54,
+						memDC, 0, 0, 20, 27, RGB(255, 0, 255));
+				}
+			}
+		}
+
 		// 몸
 		SelectObject(memDC, g_player.base[baseIdx]);
 		TransparentBlt(hDC, x, y, dispBodyW, dispBodyH,
 			memDC, 0, 0, 16, 28, RGB(255, 0, 255));
 
 		if (isFishingState) {
-			// 낚시 팔
 			if (g_player.fishing_arm[g_fishingArmIdx] != NULL) {
 				SelectObject(memDC, g_player.fishing_arm[g_fishingArmIdx]);
 				if (g_player.dir == DIR_DOWN) {
@@ -1263,8 +1335,38 @@ void DrawPlayer(HDC hDC) {
 				}
 			}
 		}
+		else if (g_isFarmingAnim) {
+			// farming 팔 — DIR_DOWN: 앞면(몸 앞), DIR_RIGHT: 옆면(몸 앞)
+			// DIR_UP는 이미 몸 그리기 전에 처리했으므로 여기서 제외
+			if (g_player.dir == DIR_DOWN) {
+				if (g_player.farming_arm[g_farmArmIdx] != NULL) {
+					SelectObject(memDC, g_player.farming_arm[g_farmArmIdx]);
+					if (g_currentTool == TOOL_HOE || g_currentTool == TOOL_AXE) {
+						TransparentBlt(hDC, x + farmArmHoeOffX_front, y + farmArmHoeOffY_front, 64, 74,
+							memDC, 0, 0, 32, 37, RGB(255, 0, 255));
+					}
+					else if (g_currentTool == TOOL_WATER) {
+						TransparentBlt(hDC, x + farmArmWatOffX, y + farmArmWatOffY, 40, 54,
+							memDC, 0, 0, 20, 27, RGB(255, 0, 255));
+					}
+				}
+			}
+			else if (g_player.dir == DIR_RIGHT) {
+				if (g_player.farming_arm[g_farmArmIdx] != NULL) {
+					SelectObject(memDC, g_player.farming_arm[g_farmArmIdx]);
+					if (g_currentTool == TOOL_HOE || g_currentTool == TOOL_AXE) {
+						TransparentBlt(hDC, x + farmArmHoeOffX_side, y + farmArmHoeOffY_side, 64, 74,
+							memDC, 0, 0, 32, 37, RGB(255, 0, 255));
+					}
+					else if (g_currentTool == TOOL_WATER) {
+						TransparentBlt(hDC, x + farmArmWatOffX, y + farmArmWatOffY, 40, 54,
+							memDC, 0, 0, 20, 27, RGB(255, 0, 255));
+					}
+				}
+			}
+		}
 		else {
-			// 일반 팔 — 원본과 동일
+			// 일반 걷기 팔
 			if (g_player.base_arm[baseIdx] != NULL) {
 				SelectObject(memDC, g_player.base_arm[baseIdx]);
 				TransparentBlt(hDC, x, y + armOffY, dispArmW, dispArmH,
@@ -1546,6 +1648,30 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			for (int cc = 0; cc < MAP_TILE_W; cc++) farmState[rr][cc] = 0;
 
 		// 플레이어 이미지 로드 (아래 base/base_arm 로드에서 수행)
+		g_player.farming_arm[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_호미_앞면1_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_호미_앞면2_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_호미_앞면3_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_호미_앞면4_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[4] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_호미_앞면5_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[5] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_호미_옆면1_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[6] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_호미_옆면2_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[7] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_호미_옆면3_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[8] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_호미_옆면4_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[9] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_호미_옆면5_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[10] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_도끼_앞면1_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[11] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_도끼_앞면2_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[12] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_도끼_앞면3_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[13] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_도끼_앞면4_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[14] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_도끼_앞면5_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[15] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_도끼_옆면1_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[16] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_도끼_옆면2_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[17] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_도끼_옆면3_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[18] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_도끼_옆면4_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[19] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_도끼_옆면5_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[20] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_물뿌리개_앞면1_20x27.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[21] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_물뿌리개_앞면2_20x27.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[22] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_물뿌리개_옆면1_20x27.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_player.farming_arm[23] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_물뿌리개_옆면2_20x27.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		//씬/플레이어 초기화
 		g_currentScene = SCENE_FARM;
@@ -1684,7 +1810,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 
 			// 그리기 순서: 집 먼저 → 나무 나중 (나무가 집 앞에 그려져 자연스럽게)
 			DrawHouseAnimated(backDC);
-			DrawTrees(backDC);
+			DrawFarmTrees(backDC);
 
 			DrawPlayer(backDC);
 
@@ -1728,13 +1854,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			int playerFootY = g_player.y + g_player.h * 3 / 4;
 
 			// 플레이어 뒤에 있는 나무 먼저 (플레이어가 나무 앞에 서있는 경우)
-			DrawTrees(backDC, hBitmap_fishTree, playerFootY, false);
+			DrawFishingTrees(backDC, hBitmap_fishTree, playerFootY, false);
 
 			// 플레이어 (스프라이트 or 도형)
 			DrawPlayer(backDC);
 
 			// 플레이어 앞에 있는 나무 나중에 (나무가 플레이어를 가리는 경우)
-			DrawTrees(backDC, hBitmap_fishTree, playerFootY, true);
+			DrawFishingTrees(backDC, hBitmap_fishTree, playerFootY, true);
 
 			SetBkMode(backDC, TRANSPARENT);
 			SetTextColor(backDC, RGB(255, 255, 255));
@@ -1766,7 +1892,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		}
 		}
 
-		// 플레이어참고(backDC, g_player.base, g_player.fishing_arm);
+		플레이어참고(backDC, g_player.base, g_player.farming_arm);
 
 		// 화면으로 한 번에 복사 
 		BitBlt(hDC, 0, 0, CLIENT_W, CLIENT_H, backDC, 0, 0, SRCCOPY);
@@ -1840,6 +1966,40 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				else {
 					HandleFarmClick(mx, my);
 				}
+
+				// 호미/도끼/물뿌리개 선택 시 farming 애니 시작 (애니 중 중복 시작 방지)
+				if (!g_isFarmingAnim) {
+					if (g_currentTool == TOOL_HOE || g_currentTool == TOOL_AXE) {
+						g_isFarmingAnim = true;
+						g_farmArmTimer = 0;
+						g_farmArmSeqPos = 0;
+						g_farmSeqLen = 5;
+						if (g_player.dir == DIR_DOWN || g_player.dir == DIR_UP) {
+							g_farmSeqPtr = (g_currentTool == TOOL_HOE) ? g_farmSeqHoeFront : g_farmSeqAxeFront;
+							g_farmArmIdx = g_farmSeqHoeFront[0]; // 앞면 시작 인덱스
+							if (g_currentTool == TOOL_AXE) g_farmArmIdx = g_farmSeqAxeFront[0];
+						}
+						else {
+							g_farmSeqPtr = (g_currentTool == TOOL_HOE) ? g_farmSeqHoeSide : g_farmSeqAxeSide;
+							g_farmArmIdx = g_farmSeqHoeSide[0];
+							if (g_currentTool == TOOL_AXE) g_farmArmIdx = g_farmSeqAxeSide[0];
+						}
+					}
+					else if (g_currentTool == TOOL_WATER) {
+						g_isFarmingAnim = true;
+						g_farmArmTimer = 0;
+						g_farmArmSeqPos = 0;
+						g_farmSeqLen = 3;
+						if (g_player.dir == DIR_DOWN || g_player.dir == DIR_UP) {
+							g_farmSeqPtr = g_farmSeqWaterFront;
+						}
+						else {
+							g_farmSeqPtr = g_farmSeqWaterSide;
+						}
+						g_farmArmIdx = g_farmSeqPtr[0];
+					}
+				}
+
 				InvalidateRect(hWnd, NULL, FALSE);
 				break;
 			}
@@ -1849,7 +2009,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			floatingGreenBar = true; // 낚시 게임 중 마우스 누르면 초록 게이지 올라감
 		}
 
-		if (canFishing && g_fishingPhase == FISHING_PHASE_NONE) {
+		if (canFishing && g_fishingPhase == FISHING_PHASE_NONE && g_currentTool == TOOL_POLE) {
 			// 낚시 시작: 캐스팅 단계로 진입
 			g_fishingPhase = FISHING_PHASE_CAST;
 			g_castFrameIdx = 0;
@@ -1902,6 +2062,25 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		switch (wParam) { // 타이머 규칙 : 0XXX : 플레이어 관련 타이머, 1XXX : 농사 관련 타이머, 2XXX : 낚시 관련 타이머, 3XXX : 디펜스 관련 타이머
 		case 0001: // 플레이어 이동 및 트리거 체크 타이머
 			if (g_currentScene == SCENE_FARM || g_currentScene == SCENE_FISHING) {
+
+				// farming 애니메이션 프레임 업데이트
+				if (g_isFarmingAnim && g_farmSeqPtr != NULL) {
+					g_farmArmTimer++;
+					if (g_farmArmTimer >= FARM_ARM_TICKS_PER_FRAME) {
+						g_farmArmTimer = 0;
+						g_farmArmSeqPos++;
+						if (g_farmArmSeqPos >= g_farmSeqLen) {
+							// 시퀀스 끝 → 애니 종료
+							g_isFarmingAnim = false;
+							g_farmArmSeqPos = 0;
+							g_farmArmIdx = 0;
+						}
+						else {
+							g_farmArmIdx = g_farmSeqPtr[g_farmArmSeqPos];
+						}
+					}
+				}
+
 				UpdatePlayer();
 				// 낚시터 씬일 때 낚시 가능 여부 갱신 (발 기준)
 				if (g_currentScene == SCENE_FISHING) {
