@@ -1352,7 +1352,7 @@ void DrawPlayer(HDC hDC) {
 		if (isFishingState) {
 			if (g_player.fishing_arm[g_fishingArmIdx] != NULL) {
 				DrawFlipped(hDC, memDC, g_player.fishing_arm[g_fishingArmIdx],
-					x + 26, y - 24, dispFArmSideW, dispFArmSideH, 44, 33);
+					x - 30, y - 24, dispFArmSideW, dispFArmSideH, 44, 33);
 			}
 		}
 		else if (g_isFarmingAnim) {
@@ -1618,6 +1618,14 @@ void UpdateFishMovement(struct TargetFish& fish) {
 	}
 }
 
+// 낚시 바의 플레이어 기준 상대 조정값 — 외부에서 이 값만 수정하면 위치 조정 가능
+// 플레이어 오른쪽 기준으로 추가 오프셋
+static int g_fishBarAdjX = 10;  // 플레이어 오른쪽 끝에서 추가로 얼마나 (픽셀)
+static int g_fishBarAdjY = -50;   // 플레이어 Y에서 추가로 얼마나 (픽셀, 음수면 위로)
+// 매 프레임 WM_PAINT에서 갱신되는 실제 화면 오프셋 (직접 수정하지 말 것)
+static int g_fishBarOffX = 0;
+static int g_fishBarOffY = 0;
+
 void FishingGameLogic(HDC hDC, HBRUSH hBrush, HBRUSH oldBrush, HPEN hPen, HPEN oldPen, HBITMAP hBitmap_fishing[4], struct GreenBar greenBar, struct TargetFish targetFish, struct FishingGage fishingGage) {
 	// 낚시 게임의 핵심 로직을 구현하는 함수
 	// 게이지 바 속에서 물고기 위 아래로 움직이는 것
@@ -1628,19 +1636,19 @@ void FishingGameLogic(HDC hDC, HBRUSH hBrush, HBRUSH oldBrush, HPEN hPen, HPEN o
 	HDC hFishDC = CreateCompatibleDC(hDC);
 	// 낚시 게이지 바 배경
 	SelectObject(hFishDC, hBitmap_fishing[0]);
-	TransparentBlt(hDC, 0, 0, 37, 149, hFishDC, 0, 0, 37, 149, RGB(255, 0, 255));
+	TransparentBlt(hDC, 0 + g_fishBarOffX, 0 + g_fishBarOffY, 37, 149, hFishDC, 0, 0, 37, 149, RGB(255, 0, 255));
 
 	// 물고기를 안에 둬야 하는 초록 게이지
 	SelectObject(hFishDC, hBitmap_fishing[1]);
-	TransparentBlt(hDC, greenBar.x, greenBar.y, greenBar.width, greenBar.height, hFishDC, 0, 0, 10, 10, RGB(255, 0, 255));
+	TransparentBlt(hDC, greenBar.x + g_fishBarOffX, greenBar.y + g_fishBarOffY, greenBar.width, greenBar.height, hFishDC, 0, 0, 10, 10, RGB(255, 0, 255));
 
 	if (targetFish.inGreenBar) {
 		SelectObject(hFishDC, hBitmap_fishing[2]);
-		TransparentBlt(hDC, targetFish.x, targetFish.y, targetFish.width, targetFish.height, hFishDC, 20, 0, 19, 20, RGB(255, 0, 255));
+		TransparentBlt(hDC, targetFish.x + g_fishBarOffX, targetFish.y + g_fishBarOffY, targetFish.width, targetFish.height, hFishDC, 20, 0, 19, 20, RGB(255, 0, 255));
 	}
 	else {
 		SelectObject(hFishDC, hBitmap_fishing[2]);
-		TransparentBlt(hDC, targetFish.x, targetFish.y, targetFish.width, targetFish.height, hFishDC, 0, 0, 19, 20, RGB(255, 0, 255));
+		TransparentBlt(hDC, targetFish.x + g_fishBarOffX, targetFish.y + g_fishBarOffY, targetFish.width, targetFish.height, hFishDC, 0, 0, 19, 20, RGB(255, 0, 255));
 	}
 
 	DeleteDC(hFishDC);
@@ -1650,11 +1658,11 @@ void FishingGameLogic(HDC hDC, HBRUSH hBrush, HBRUSH oldBrush, HPEN hPen, HPEN o
 	hBrush = CreateSolidBrush(RGB(255, 0, 0));
 	oldBrush = (HBRUSH)SelectObject(hDC, hBrush);
 
-	int gageTop = fishingGage.height;                          // 전체 게이지의 top 좌표
-	int gageBottom = fishingGage.y + fishingGage.height;          // 전체 게이지의 bottom 좌표 
-	int gageTotalH = gageBottom - gageTop;                        // 전체 게이지 높이 = fishingGage.y
+	int gageTop = fishingGage.height + g_fishBarOffY;
+	int gageBottom = fishingGage.y + fishingGage.height + g_fishBarOffY;
+	int gageTotalH = gageBottom - gageTop;
 	int filledTop = gageBottom - (gageTotalH * fishingGage.current / fishingGage.maxVal);
-	Rectangle(hDC, fishingGage.width, filledTop, fishingGage.x + fishingGage.width, gageBottom);
+	Rectangle(hDC, fishingGage.width + g_fishBarOffX, filledTop, fishingGage.x + fishingGage.width + g_fishBarOffX, gageBottom);
 	SelectObject(hDC, oldPen);
 	SelectObject(hDC, oldBrush);
 	DeleteObject(hPen);
@@ -1674,10 +1682,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 
 	// 아이템
 	static struct Item fishItem[50];
-	// 이미지소스\\인벤토리\\Carp_48x48.bmp
-	// 이미지소스\\인벤토리\\Perch_48x48.bmp
-	// 이미지소스\\인벤토리\\Squid_48x48.bmp
-	// 이미지소스\\인벤토리\\Pufferfish_48x48.bmp
 
 	// 농장 배경 (조성현 담당)
 	static HBITMAP hBitmap_farm; // 농장 풍경 배경 이미지
@@ -1814,10 +1818,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		g_hBitmap_biteNotice = hBitmap_fishing[3]; // DrawPlayer에서 접근용
 
 		// 물고기 아이템 비트맵 로드
-		g_hBitmap_fishItem[FISH_ITEM_CARP] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\인벤토리\\Carp_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_fishItem[FISH_ITEM_PUFFER] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\인벤토리\\Pufferfish_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_fishItem[FISH_ITEM_SQUID] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\인벤토리\\Squid_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_fishItem[FISH_ITEM_BASS] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\인벤토리\\Perch_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_fishItem[FISH_ITEM_CARP] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Carp_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_fishItem[FISH_ITEM_PUFFER] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Pufferfish_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_fishItem[FISH_ITEM_SQUID] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Squid_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_fishItem[FISH_ITEM_BASS] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Perch_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		hBitmap_fishingGround = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\fishingmap_1280x1280.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		hBitmap_fishTree[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\Tree1_118x140.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
@@ -1969,8 +1973,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 
 			//낚시 그리기 코드
 			SelectObject(hMemDC, hBitmap);
-			if (g_fishingPhase == FISHING_PHASE_GAME)
+			if (g_fishingPhase == FISHING_PHASE_GAME) {
+				// 낚시 바를 플레이어 화면 좌표 기준으로 배치
+				// g_fishBarAdjX/Y 로 세부 위치 조정 가능
+				g_fishBarOffX = (g_player.x - cameraX) + g_player.w + g_fishBarAdjX;
+				g_fishBarOffY = (g_player.y - cameraY) + g_fishBarAdjY;
 				FishingGameLogic(backDC, hBrush, oldBrush, hPen, oldPen, hBitmap_fishing, greenBar, targetFish, fishingGage);
+			}
 			break;
 		}
 
