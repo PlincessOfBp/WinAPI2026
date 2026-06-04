@@ -53,7 +53,7 @@ struct Item {
 	int x, y;
 	int w, h;
 	int count; // 아이템 위 아래로 둥둥 부유하는거
-	HBITMAP hbitmap;
+	HBITMAP hBitmap;
 };
 
 // 플레이어 구조체
@@ -283,6 +283,22 @@ enum ToolType {
 };
 static ToolType g_currentTool = TOOL_NONE;
 static bool g_isInventoryOpen = false;
+
+// 플레이어 골드
+static int g_gold = 500; // 초기 골드 (외부에서 조정 가능)
+
+// 상점 씨앗 데이터
+#define SHOP_SEED_COUNT 4
+static const wchar_t* g_seedNames[SHOP_SEED_COUNT] = { L"감자 씨앗", L"당근 씨앗", L"대황 씨앗", L"딸기 씨앗" };
+static int             g_seedPrices[SHOP_SEED_COUNT] = { 25, 15, 50, 100 };
+// 씨앗 아이템 화면 위치 
+static int g_seedItemX[SHOP_SEED_COUNT] = { 100 + 25, 100 + 95, 100 + 95 + 70, 100 + 90 + 140 };
+static int g_seedItemY[SHOP_SEED_COUNT] = { 200 + 25, 200 + 25, 200 + 25,      200 + 25 };
+#define SHOP_SEED_W 48
+#define SHOP_SEED_H 48
+
+// 현재 호버 중인 씨앗 인덱스 (-1이면 없음)
+static int g_shopHoverIdx = -1;
 
 // ---------- 인벤토리 슬롯 데이터 ----------
 // 1줄 퀵슬롯 4칸: [0]=HOE 고정 [1]=WATER 고정 [2]=POLE 고정 [3]=장착(빈칸 가능)
@@ -1696,6 +1712,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	static struct TargetFish targetFish; // 게이지 안 속을 움직이는 물고기
 	static struct FishingGage fishingGage; // 낚시 외부 게이지 정보
 
+	// Shop
+	static HBITMAP hBitmap_shopUi[2]; // 0 아이템 이름 가격 적는곳, 1 구매할 아이템 전시하는곳
+	static HBITMAP hBitmap_test; // 테스트용 (나중에 제거) - 내 인벤토리 (판매할 것)
+	static HBITMAP hBitmap_seedItem[4]; //0감자 1당근 2대황 3딸기
+
 	switch (iMessage)
 	{
 	case WM_CREATE:
@@ -1765,7 +1786,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		g_player.farming_arm[23] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_물뿌리개_옆면2_20x27.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		//씬/플레이어 초기화
-		g_currentScene = SCENE_FARM;
+		g_currentScene = SCENE_SHOP;
 		g_player.x = 700; g_player.y = 700;  // 절벽 RECT(0,0~600,450) 밖에서 시작
 		g_player.w = PLAYER_DISPLAY_W;
 		g_player.h = PLAYER_DISPLAY_H;
@@ -1827,6 +1848,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		hBitmap_fishTree[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\Tree1_118x140.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		hBitmap_fishTree[1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\Tree2_56x72.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		hBitmap_fishTree[2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\낚시\\Tree3_50x62.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+
+		// 씨앗 아이템 비트맵 로드
+		hBitmap_seedItem[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Potato_Seeds_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		hBitmap_seedItem[1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Carrot_Seeds_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		hBitmap_seedItem[2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Rhubarb_Seeds_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		hBitmap_seedItem[3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Strawberry_Seeds_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+
+		// Shop 비트맵 로드
+		hBitmap_shopUi[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\inventory\\emptyUi_300x300.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		hBitmap_shopUi[1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\inventory\\inventory_1.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		hBitmap_test = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\inventory\\inventory_4.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		canFishing = false; // 낚시 가능 영역에 있을 때만 true로 설정됨
 		isFishing = false;
@@ -1991,12 +2023,106 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			FillRect(backDC, &r, shopBg);
 			DeleteObject(shopBg);
 
+			HDC hShopDC = CreateCompatibleDC(backDC);
+
+			// 아이템에 대한 설명이 있을 자리.
+			// 판매할 아이템이나 인벤토리 속 아이템에 마우스를 올리면 이 부분에 아이템 설명이 뜬다.
+			// 감자 씨앗 25골드 당근 씨앗 15골드 대황 씨앗 50골드 딸기 씨앗 100골드
+			HBITMAP hOldShop = (HBITMAP)SelectObject(hShopDC, hBitmap_shopUi[0]);
+			TransparentBlt(backDC, 550, 200, 200, 200,
+				hShopDC, 0, 0, 300, 300, RGB(255, 0, 255));
+			HFONT hFontBig = CreateFont(
+				40, 0, 0, 0,
+				FW_BOLD,
+				FALSE, FALSE, FALSE,
+				DEFAULT_CHARSET,
+				OUT_DEFAULT_PRECIS,
+				CLIP_DEFAULT_PRECIS,
+				DEFAULT_QUALITY,
+				DEFAULT_PITCH | FF_DONTCARE,
+				TEXT("맑은 고딕")
+			);
+
+			HFONT hFontSmall = CreateFont(
+				30, 0, 0, 0,
+				FW_BOLD,
+				FALSE, FALSE, FALSE,
+				DEFAULT_CHARSET,
+				OUT_DEFAULT_PRECIS,
+				CLIP_DEFAULT_PRECIS,
+				DEFAULT_QUALITY,
+				DEFAULT_PITCH | FF_DONTCARE,
+				TEXT("맑은 고딕")
+			);
+
+			HFONT hOldFont = (HFONT)SelectObject(backDC, hFontBig);
 			SetBkMode(backDC, TRANSPARENT);
-			SetTextColor(backDC, RGB(255, 255, 255));
-			const wchar_t* msg = L"상점 씬입니다";
-			TextOut(backDC, CLIENT_W / 2 - 60, CLIENT_H / 2 - 20, msg, (int)wcslen(msg));
-			const wchar_t* hint = L"(추후 상점 UI 구현 예정)";
-			TextOut(backDC, CLIENT_W / 2 - 90, CLIENT_H / 2 + 10, hint, (int)wcslen(hint));
+			SetTextColor(backDC, RGB(0, 0, 0));
+
+			if (g_shopHoverIdx >= 0) {
+				// 호버 중인 씨앗 이름 표시
+				TextOut(backDC, 560, 210, g_seedNames[g_shopHoverIdx], (int)wcslen(g_seedNames[g_shopHoverIdx]));
+				SelectObject(backDC, hFontSmall);
+
+				// 가격 표시
+				wchar_t priceStr[64];
+				wsprintfW(priceStr, L"가격: %d골드", g_seedPrices[g_shopHoverIdx]);
+				TextOut(backDC, 560, 280, priceStr, (int)wcslen(priceStr));
+
+				// 구매 가능 여부 판단 (골드 우선)
+				if (g_gold < g_seedPrices[g_shopHoverIdx]) {
+					SetTextColor(backDC, RGB(200, 0, 0));
+					TextOut(backDC, 560, 310, L"돈이 부족합니다.", 8);
+					SetTextColor(backDC, RGB(0, 0, 0));
+				}
+				else {
+					// TODO: 인벤토리 충분히 구현 시 아래 주석 해제 후 꽉 찬 경우 처리
+					// if (IsInventoryFull()) {
+					//     SetTextColor(backDC, RGB(200, 0, 0));
+					//     TextOut(backDC, 560, 310, L"인벤토리가 꽉 찼습니다.", 11);
+					//     SetTextColor(backDC, RGB(0, 0, 0));
+					// }
+					// else {
+					TextOut(backDC, 560, 310, L"좌클릭 시 1개 구매", 11);
+					// }
+				}
+			}
+			else {
+				// 호버 없을 때 기본 안내
+				SelectObject(backDC, hFontSmall);
+				TextOut(backDC, 560, 240, L"아이템에 마우스를", 8);
+				TextOut(backDC, 560, 270, L"올려보세요.", 5);
+			}
+
+			SelectObject(backDC, hOldFont);
+			DeleteObject(hFontBig);
+			DeleteObject(hFontSmall);
+
+			// 판매할 아이템이 있을 자리.
+			SelectObject(hShopDC, hBitmap_shopUi[1]);
+			TransparentBlt(backDC, 100, 200, 300, 96,
+				hShopDC, 0, 0, 300, 96, RGB(255, 0, 255));
+			SelectObject(hShopDC, hBitmap_seedItem[0]);
+			TransparentBlt(backDC, 100 + 25, 200 + 25, 48, 48,
+				hShopDC, 0, 0, 48, 48, RGB(255, 0, 255));
+			SelectObject(hShopDC, hBitmap_seedItem[1]);
+			TransparentBlt(backDC, 100 + 95, 200 + 25, 48, 48,
+				hShopDC, 0, 0, 48, 48, RGB(255, 0, 255));
+			SelectObject(hShopDC, hBitmap_seedItem[2]);
+			TransparentBlt(backDC, 100 + 95 + 70, 200 + 25, 48, 48,
+				hShopDC, 0, 0, 48, 48, RGB(255, 0, 255));
+			SelectObject(hShopDC, hBitmap_seedItem[3]);
+			TransparentBlt(backDC, 100 + 90 + 140, 200 + 25, 48, 48,
+				hShopDC, 0, 0, 48, 48, RGB(255, 0, 255));
+
+			// 플레이어의 인벤토리가 있을 자리. test로 위치만 따둔 상태. 
+			SelectObject(hShopDC, hBitmap_test);
+			TransparentBlt(backDC, 100, 400, 300, 300,
+				hShopDC, 0, 0, 300, 300, RGB(255, 0, 255));
+
+			SelectObject(hShopDC, hOldShop);
+			DeleteDC(hShopDC);
+
 			break;
 		}
 		}
@@ -2021,6 +2147,31 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 
 	case WM_LBUTTONDOWN:
 	{
+		if (g_currentScene == SCENE_SHOP) {
+			int mx = LOWORD(lParam);
+			int my = HIWORD(lParam);
+			int i;
+			for (i = 0; i < SHOP_SEED_COUNT; i++) {
+				if (mx >= g_seedItemX[i] && mx < g_seedItemX[i] + SHOP_SEED_W &&
+					my >= g_seedItemY[i] && my < g_seedItemY[i] + SHOP_SEED_H) {
+					// 골드 우선 체크
+					if (g_gold < g_seedPrices[i]) {
+						// 돈 부족 — 설명란에 이미 표시되므로 추가 처리 없음
+						break;
+					}
+					// TODO: 인벤토리 충분히 구현 시 아래 조건 추가
+					// if (IsInventoryFull()) { break; }
+
+					// 구매 처리
+					g_gold -= g_seedPrices[i];
+					// TODO: 인벤토리 충분히 구현 시 아이템 인벤토리에 추가 구현
+					// ex) AddSeedToInventory(i);
+					InvalidateRect(hWnd, NULL, FALSE);
+					break;
+				}
+			}
+			break;
+		}
 
 		if (g_currentScene == SCENE_FARM) {
 			int mx = LOWORD(lParam);
@@ -2162,7 +2313,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 
 	case WM_MOUSEMOVE:
 	{
-
+		if (g_currentScene == SCENE_SHOP) {
+			int mx = LOWORD(lParam);
+			int my = HIWORD(lParam);
+			int prevHover = g_shopHoverIdx;
+			g_shopHoverIdx = -1;
+			int i;
+			for (i = 0; i < SHOP_SEED_COUNT; i++) {
+				if (mx >= g_seedItemX[i] && mx < g_seedItemX[i] + SHOP_SEED_W &&
+					my >= g_seedItemY[i] && my < g_seedItemY[i] + SHOP_SEED_H) {
+					g_shopHoverIdx = i;
+					break;
+				}
+			}
+			if (g_shopHoverIdx != prevHover)
+				InvalidateRect(hWnd, NULL, FALSE);
+		}
 		break;
 	}
 
@@ -2268,7 +2434,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		case 1001: // [농장] 플레이어 이동/트리거 체크
 
 			break;
-
 		case 2002: // 캐스팅 애니메이션 / 기다림 / 물었다! 타이머
 		{
 			if (g_fishingPhase == FISHING_PHASE_CAST) {
