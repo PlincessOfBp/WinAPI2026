@@ -282,10 +282,13 @@ struct Tree {
 	int kind;       // TreeKind
 	int hp;         // 체력 (0이면 벌목됨)
 	bool isAlive;
+	int shakeTimer; // 흔들림 카운터 (0이면 흔들림 없음)
 };
 static std::vector<Tree> g_trees;
 #define TREE_COUNT      15
-#define TREE_HP_DEFAULT  3   // 도끼 3번 치면 베어짐
+#define TREE_HP_DEFAULT  3   // 도끼 N번 치면 베어짐 — 외부에서 이 값 수정 가능
+#define TREE_SHAKE_TICKS 8   // 흔들림 지속 틱 수 — 외부에서 조정 가능
+#define TREE_SHAKE_OFFX  4   // 흔들림 최대 픽셀 오프셋 — 외부에서 조정 가능
 
 // ---------- 동적 오브젝트: 애니메이션 집 ----------
 // house.bmp 768x96 = 96x96 × 8 프레임 (가로 스트립)
@@ -391,7 +394,8 @@ enum ToolType {
 	ITEM_FISH_PERCH = 10,
 	ITEM_FISH_PUFFERFISH = 11,
 	ITEM_FISH_SQUID = 12,
-	ITEM_COUNT = 13
+	ITEM_LOG = 13,          // 통나무 (도끼로 나무 벌목 시 드롭)
+	ITEM_COUNT = 14
 };
 // ItemType 은 ToolType 동의어 (사용자 요청 이름)
 typedef ToolType ItemType;
@@ -400,6 +404,21 @@ typedef ToolType ItemType;
 #define ITEM_WATER  TOOL_WATER
 #define ITEM_ROD    TOOL_POLE
 #define ITEM_AXE    TOOL_AXE
+
+// 바닥 드롭 아이템 (통나무/작물) — 물고기 드롭과 동일한 로직
+struct DroppedItem {
+	int      worldX, worldY;
+	ItemType type;
+	bool     active;
+	int      floatTimer;
+	int      graceTick;
+};
+static DroppedItem g_droppedItem = { 0, 0, ITEM_NONE, false, 0, 0 };
+static int g_itemGraceTicks   = 5;  // 획득 유예 틱 수 — 외부 조정 가능 (5 = 0.5초)
+#define DROPPED_ITEM_FLOAT_RANGE    3
+#define DROPPED_ITEM_FLOAT_PERIOD  40
+#define DROPPED_ITEM_DRAW_W        48
+#define DROPPED_ITEM_DRAW_H        48
 
 // ----- ItemType 정의 이후에 위치 — 씨앗/작물 변환 헬퍼 -----
 static int SeedToCrop(ItemType seed) {
@@ -675,6 +694,7 @@ void InitTrees() {
 		}
 		if (bad) continue;
 		t.hp = TREE_HP_DEFAULT;
+		t.shakeTimer = 0;
 		t.isAlive = true;
 		g_trees.push_back(t);
 		placed++;
@@ -689,7 +709,13 @@ void DrawFarmTrees(HDC hDC) {
 	for (size_t i = 0; i < g_trees.size(); i++) {
 		Tree& t = g_trees[i];
 		if (!t.isAlive) continue;
-		int sx = t.x - cameraX;
+		// 흔들림 오프셋: shakeTimer 홀수면 오른쪽, 짝수면 왼쪽
+		int shakeOff = 0;
+		if (t.shakeTimer > 0) {
+			if (t.shakeTimer % 2 == 1) shakeOff =  TREE_SHAKE_OFFX;
+			else                       shakeOff = -TREE_SHAKE_OFFX;
+		}
+		int sx = t.x - cameraX + shakeOff;
 		int sy = t.y - cameraY;
 		if (sx + t.w < 0 || sx > CLIENT_W) continue;
 		if (sy + t.h < 0 || sy > CLIENT_H) continue;
@@ -698,7 +724,7 @@ void DrawFarmTrees(HDC hDC) {
 		if (t.kind == TREE_KIND_1)      src = g_hBitmap_tree1;
 		else if (t.kind == TREE_KIND_2) src = g_hBitmap_tree2;
 		else                            src = g_hBitmap_tree3;
-		if (src == NULL) continue; // 이미지 없으면 건너뜀 (도형 fallback 사용 금지)
+		if (src == NULL) continue;
 
 		HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
 		TransparentBlt(hDC, sx, sy, t.w, t.h,
@@ -1218,14 +1244,23 @@ void HandleFarmClick(int mx, int my) {
 		return;
 	}
 
-	// 4) 수확: growStage == 3 (ready) 인 작물 클릭 시 수확
-	if (g_cropType[gridY][gridX] != CROP_NONE && g_growStage[gridY][gridX] >= 3) {
+	// 4) 수확: growStage == 3 (ready) 인 작물 클릭 시 수확 + 드롭
+	if (g_currentTool == TOOL_HOE && g_cropType[gridY][gridX] != CROP_NONE && g_growStage[gridY][gridX] >= 3) {
 		ItemType harvestItem = CropToHarvestItem(g_cropType[gridY][gridX]);
-		AddItemToBag(harvestItem);
+
+		// 작물 드롭 (물고기 드롭과 동일한 로직)
+		g_droppedItem.worldX    = tileX + TILE_SIZE / 2;
+		g_droppedItem.worldY    = tileY + TILE_SIZE;
+		g_droppedItem.type      = harvestItem;
+		g_droppedItem.active    = true;
+		g_droppedItem.floatTimer = 0;
+		g_droppedItem.graceTick  = 0;
+		// TODO: 인벤토리 충분히 구현 시 아이템 인벤토리에 추가 구현
+		// ex) AddItemToBag(harvestItem);
+
 		g_cropType[gridY][gridX]  = CROP_NONE;
 		g_growStage[gridY][gridX] = 0;
-		// 수확 후 땅은 경작된 상태(1)로 복귀 → 다시 물 주면 재배 가능
-		farmState[gridY][gridX] = 1;
+		farmState[gridY][gridX]   = 1;
 		return;
 	}
 }
@@ -1254,9 +1289,19 @@ static void TryChopTree(int mx, int my) {
 		int dy = playerCY - treeCY;
 		int sqDist = dx * dx + dy * dy;
 		if (sqDist > 120 * 120) return; // 너무 멀면 무시
-		// HP 감소
+		// HP 감소 + 흔들림 시작
 		t.hp--;
-		if (t.hp <= 0) t.isAlive = false;
+		t.shakeTimer = TREE_SHAKE_TICKS;
+		if (t.hp <= 0) {
+			t.isAlive = false;
+			// 통나무 드롭 (나무 중심 위치)
+			g_droppedItem.worldX   = t.x + t.w / 2;
+			g_droppedItem.worldY   = t.y + t.h;
+			g_droppedItem.type     = ITEM_LOG;
+			g_droppedItem.active   = true;
+			g_droppedItem.floatTimer = 0;
+			g_droppedItem.graceTick  = 0;
+		}
 		return; // 한 번 클릭에 한 그루만
 	}
 }
@@ -1457,7 +1502,31 @@ static void DrawDroppedFish(HDC hDC) {
 	DeleteDC(memDC);
 }
 
-// drawBelow == true  : 플레이어 발보다 아래에 뿌리가 있는 나무 (플레이어 앞 → 나무가 플레이어를 가림)
+// ---------- 바닥에 떨어진 통나무/작물 그리기 (물고기 드롭과 동일 로직) ----------
+static void DrawDroppedItem(HDC hDC) {
+	if (!g_droppedItem.active) return;
+	if (g_droppedItem.type == ITEM_NONE) return;
+	if (g_droppedItem.type >= ITEM_COUNT) return;
+	HBITMAP src = g_hBitmap_item[g_droppedItem.type];
+	if (src == NULL) return;
+
+	int ft = g_droppedItem.floatTimer;
+	int floatOff = 0;
+	if (ft < 10)       floatOff = -(ft * DROPPED_ITEM_FLOAT_RANGE / 10);
+	else if (ft < 20)  floatOff = -((19 - ft) * DROPPED_ITEM_FLOAT_RANGE / 10);
+	else if (ft < 30)  floatOff = (ft - 20) * DROPPED_ITEM_FLOAT_RANGE / 10;
+	else               floatOff = (39 - ft) * DROPPED_ITEM_FLOAT_RANGE / 10;
+
+	int sx = g_droppedItem.worldX - DROPPED_ITEM_DRAW_W / 2 - cameraX;
+	int sy = g_droppedItem.worldY - DROPPED_ITEM_DRAW_H / 2 + floatOff - cameraY;
+
+	HDC memDC = CreateCompatibleDC(hDC);
+	HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
+	TransparentBlt(hDC, sx, sy, DROPPED_ITEM_DRAW_W, DROPPED_ITEM_DRAW_H,
+		memDC, 0, 0, DROPPED_ITEM_DRAW_W, DROPPED_ITEM_DRAW_H, EXT_TRANSPARENT);
+	SelectObject(memDC, oldB);
+	DeleteDC(memDC);
+}
 // drawBelow == false : 플레이어 발보다 위에 뿌리가 있는 나무  (플레이어 뒤 → 플레이어가 나무를 가림)
 static void DrawFishingTrees(HDC hDC, HBITMAP hBitmap_fishTree[3], int playerFootY, bool drawBelow) {
 	HDC memDC = CreateCompatibleDC(hDC);
@@ -2189,6 +2258,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		g_hBitmap_item[ITEM_FISH_PERCH]       = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Perch_48x48.bmp"),           IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		g_hBitmap_item[ITEM_FISH_PUFFERFISH]  = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Pufferfish_48x48.bmp"),      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		g_hBitmap_item[ITEM_FISH_SQUID]       = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Squid_48x48.bmp"),           IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_LOG]              = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\wood_48x48.bmp"),             IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		// ----- [작물 비트맵 로드] CropType × growStage 0~3 -----
 		g_hBitmap_crop[CROP_CARROT][0]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\carrot\\carrot_seed.bmp"),       IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
@@ -2430,6 +2500,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			// 그리기 순서: 집 먼저 → 나무 나중 (나무가 집 앞에 그려져 자연스럽게)
 			DrawHouseAnimated(backDC);
 			DrawFarmTrees(backDC);
+			DrawDroppedItem(backDC);
 
 			DrawPlayer(backDC);
 
@@ -2925,6 +2996,35 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				}
 
 				UpdatePlayer();
+
+				// 나무 흔들림 타이머 감소
+				for (size_t ti = 0; ti < g_trees.size(); ti++) {
+					if (g_trees[ti].shakeTimer > 0)
+						g_trees[ti].shakeTimer--;
+				}
+
+				// 바닥 드롭 아이템 (통나무/작물): 부유 애니 + 유예 + 플레이어 접촉 획득
+				if (g_droppedItem.active) {
+					g_droppedItem.floatTimer = (g_droppedItem.floatTimer + 1) % DROPPED_ITEM_FLOAT_PERIOD;
+					if (g_droppedItem.graceTick < g_itemGraceTicks) {
+						g_droppedItem.graceTick++;
+					}
+					else {
+						int itemLeft = g_droppedItem.worldX - DROPPED_ITEM_DRAW_W / 2;
+						int itemTop  = g_droppedItem.worldY - DROPPED_ITEM_DRAW_H / 2;
+						int playerFX = g_player.x + g_player.w / 4;
+						int playerFY = g_player.y + g_player.h * 3 / 4;
+						int playerFW = g_player.w / 2;
+						int playerFH = g_player.h / 4;
+						if (RectOverlap(itemLeft, itemTop, DROPPED_ITEM_DRAW_W, DROPPED_ITEM_DRAW_H,
+							playerFX, playerFY, playerFW, playerFH)) {
+							// TODO: 인벤토리 충분히 구현 시 아이템 인벤토리에 추가 구현
+							// ex) AddItemToBag(g_droppedItem.type);
+							g_droppedItem.active = false;
+							g_droppedItem.type   = ITEM_NONE;
+						}
+					}
+				}
 
 				// 바닥 물고기: 부유 애니 + 유예 + 플레이어 접촉 획득
 				if (g_droppedFish.active) {
