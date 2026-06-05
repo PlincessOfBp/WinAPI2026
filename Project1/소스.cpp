@@ -2133,6 +2133,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 
 	// 아이템
 	static struct Item fishItem[50];
+	static struct Item woodItem[50];
+	static struct Item fruitItem[50];
 
 	// 농장 배경 (조성현 담당)
 	static HBITMAP hBitmap_farm; // 농장 풍경 배경 이미지
@@ -2235,6 +2237,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		// (가방 초기화는 위에서 완료, 도끼는 퀵슬롯 4번에 장착됨)
 		for (int rr = 0; rr < MAP_TILE_H; rr++)
 			for (int cc = 0; cc < MAP_TILE_W; cc++) farmState[rr][cc] = 0;
+
+		// 나무 베면 나오는 아이템 로드
+		//이미지소스\\농장\\icon\\wood_48x48.bmp
+
+		// 호미로 작물 캐면 나오는 아이템 로드
+		// 이미지소스\\농장\\icon\\Potato_48x48.bmp
+		// 이미지소스\\농장\\icon\\Carrot_48x48.bmp
+		// 이미지소스\\농장\\icon\\Rhubarb_48x48.bmp
+		// 이미지소스\\농장\\icon\\Strawberry_48x48.bmp
 
 		// 플레이어 이미지 로드 (아래 base/base_arm 로드에서 수행)
 		g_player.farming_arm[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_호미_앞면1_32x37.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
