@@ -2612,6 +2612,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		case '3': SelectQuickSlot(2); break;
 		case '4': SelectQuickSlot(3); break;
 		case 'E': g_isInventoryOpen = !g_isInventoryOpen; g_selectedInv4 = -1; break;
+		case 'Q':
+			if (g_currentScene == SCENE_SHOP) {
+				g_currentScene = SCENE_FARM;
+				// 집 문 바로 아래에 스폰 (HOUSE_DOOR_X/Y 기준)
+				g_player.x = g_house.x + (HOUSE_DRAW_W - HOUSE_DOOR_W) / 2;
+				g_player.y = g_house.y + HOUSE_DRAW_H + 8;
+				g_player.dir = DIR_DOWN;
+				g_sceneCooldown = 30;
+			}
+			break;
 		case VK_LEFT:  case 'A': g_keyLeft = true;  break;
 		case VK_RIGHT: case 'D': g_keyRight = true; break;
 		case VK_UP:    case 'W': g_keyUp = true;    break;
