@@ -226,14 +226,9 @@ void DrawNightOverlay(HDC hDC) {
 	DeleteDC(memDC);
 }
 
-// 게임 시간 진행 (매 틱마다 호출)
-void UpdateGameTime() {
-	g_timeOfDay += TIME_OF_DAY_STEP;
-	if (g_timeOfDay >= 1.0f) {
-		g_timeOfDay = 0.0f;
-		g_gameDay++;
-	}
-}
+// 전방 선언: 실제 본체는 farmState/g_cropType 등 정의 아래에 있음
+void UpdateFarmAtNight();
+void UpdateGameTime();
 
 // ---------- 전방 선언: 아래쪽에 정의된 함수 미리 알려주기 ----------
 static bool RectOverlap(int ax, int ay, int aw, int ah,
@@ -322,6 +317,56 @@ static AnimatedHouse g_house = { 705, 470, 0, 0, false, false, 0 };
 // 0=기본 땅, 1=경작된 땅, 2=젖은 땅
 static int farmState[MAP_TILE_H][MAP_TILE_W] = { 0, };
 
+// ----- 작물 시스템 -----
+// CropType: 어떤 작물이 심어졌는지
+enum CropType {
+	CROP_NONE = 0,
+	CROP_CARROT = 1,
+	CROP_POTATO = 2,
+	CROP_RHUBARB = 3,
+	CROP_STRAWBERRY = 4,
+	CROP_COUNT = 5
+};
+
+// ===== FarmTile 구조체 (사용자 요청) =====
+// 각 타일의 모든 정보를 하나로 묶음.
+// 작물의 절대 좌표를 별도로 두지 않고, 항상 farmGrid[r][c] 의 인덱스 = 격자 위치로 종속됨.
+// 그래서 다음 날에도 작물이 엉뚱한 곳으로 날아갈 일이 없음.
+struct FarmTile {
+	int isTilled;   // 경작 여부 (0=일반, 1=경작, 2=물줌) → farmState 와 동일 의미
+	int isWatered;  // 0/1 (호환용 — isTilled==2 와 동일하게 동작)
+	int cropType;   // CROP_NONE/CARROT/POTATO/RHUBARB/STRAWBERRY
+	int growStage;  // 0=seed, 1=grow1, 2=grow2, 3=ready
+	int plantedDay; // 심은 일차 (g_gameDay 값)
+};
+// (실제 데이터는 평행 배열로 유지 — 기존 코드 영향 최소화)
+// growStage: 0=seed, 1=grow1, 2=grow2, 3=ready
+static int g_cropType[MAP_TILE_H][MAP_TILE_W]   = { 0, };
+static int g_growStage[MAP_TILE_H][MAP_TILE_W]  = { 0, };
+static int g_plantedDay[MAP_TILE_H][MAP_TILE_W] = { 0, };
+
+// FarmTile 헬퍼: 격자 인덱스(col, row)로 FarmTile 정보 묶어서 가져오기
+static FarmTile GetFarmTile(int col, int row) {
+	FarmTile t;
+	t.isTilled   = farmState[row][col];
+	t.isWatered  = (farmState[row][col] == 2) ? 1 : 0;
+	t.cropType   = g_cropType[row][col];
+	t.growStage  = g_growStage[row][col];
+	t.plantedDay = g_plantedDay[row][col];
+	return t;
+}
+static void SetFarmTile(int col, int row, const FarmTile& t) {
+	farmState[row][col]    = t.isTilled;
+	g_cropType[row][col]   = t.cropType;
+	g_growStage[row][col]  = t.growStage;
+	g_plantedDay[row][col] = t.plantedDay;
+}
+
+// 작물 비트맵 [CropType][growStage 0~3]
+static HBITMAP g_hBitmap_crop[CROP_COUNT][4] = { NULL, };
+
+// (SeedToCrop / CropToHarvestItem 본체는 ItemType 정의 후에 위치함 — 아래쪽 참조)
+
 // 농사 타일 시트에서 잘라낼 좌표 (사용자 지정값)
 #define FARM_TILE_TILLED_SRC_X    96
 #define FARM_TILE_TILLED_SRC_Y  1152
@@ -355,6 +400,50 @@ typedef ToolType ItemType;
 #define ITEM_WATER  TOOL_WATER
 #define ITEM_ROD    TOOL_POLE
 #define ITEM_AXE    TOOL_AXE
+
+// ----- ItemType 정의 이후에 위치 — 씨앗/작물 변환 헬퍼 -----
+static int SeedToCrop(ItemType seed) {
+	switch (seed) {
+	case ITEM_SEED_CARROT:     return CROP_CARROT;
+	case ITEM_SEED_POTATO:     return CROP_POTATO;
+	case ITEM_SEED_RHUBARB:    return CROP_RHUBARB;
+	case ITEM_SEED_STRAWBERRY: return CROP_STRAWBERRY;
+	default: return CROP_NONE;
+	}
+}
+static ItemType CropToHarvestItem(int crop) {
+	switch (crop) {
+	case CROP_CARROT:     return ITEM_SEED_CARROT;
+	case CROP_POTATO:     return ITEM_SEED_POTATO;
+	case CROP_RHUBARB:    return ITEM_SEED_RHUBARB;
+	case CROP_STRAWBERRY: return ITEM_SEED_STRAWBERRY;
+	default: return ITEM_NONE;
+	}
+}
+
+// ----- 농장 갱신 함수 본체 (farmState/g_cropType/g_growStage 모두 위쪽에 정의됨) -----
+void UpdateFarmAtNight() {
+	for (int r = 0; r < MAP_TILE_H; r++) {
+		for (int c = 0; c < MAP_TILE_W; c++) {
+			// 1) 물 준 땅 + 작물 심어진 곳 → growStage++ (최대 3)
+			if (farmState[r][c] == 2 && g_cropType[r][c] != CROP_NONE && g_growStage[r][c] < 3) {
+				g_growStage[r][c]++;
+			}
+			// 2) 물 준 땅(2) → 마른 땅(1) 복귀 (다음 날 다시 물 줘야 자람)
+			if (farmState[r][c] == 2) {
+				farmState[r][c] = 1;
+			}
+		}
+	}
+}
+void UpdateGameTime() {
+	g_timeOfDay += TIME_OF_DAY_STEP;
+	if (g_timeOfDay >= 1.0f) {
+		g_timeOfDay = 0.0f;
+		g_gameDay++;
+		UpdateFarmAtNight();   // 새 날 시작 시 농장 갱신
+	}
+}
 
 static ToolType g_currentTool = TOOL_NONE;
 static bool g_isInventoryOpen = false;
@@ -662,29 +751,86 @@ void DrawHouseAnimated(HDC hDC) {
 	DeleteDC(memDC);
 }
 
-// ---------- 농사 타일 그리기 (개별 비트맵 cultivated_land / wet_ground) ----------
-void DrawFarmTiles(HDC hDC) {
+// ---------- 농사 타일 그리기 (사용자 명시 — 절대좌표 → 카메라 빼서 32x32 그대로) ----------
+// 흙 타일은 무조건 32x32 크기로 worldTileX/Y → -cameraX/Y 위치에 먼저 그려져야 함.
+// 그 위에 작물(DrawCrops)이 덮어씌워짐.
+void DrawFarmTiles(HDC hdc) {
 	if (g_hBitmap_cultivated == NULL && g_hBitmap_wet == NULL) return;
-	HDC memDC = CreateCompatibleDC(hDC);
-	for (int r = 0; r < MAP_TILE_H; r++) {
-		for (int c = 0; c < MAP_TILE_W; c++) {
-			int s = farmState[r][c];
+	HDC hdcTileMem = CreateCompatibleDC(hdc);
+	for (int row = 0; row < MAP_TILE_H; row++) {
+		for (int col = 0; col < MAP_TILE_W; col++) {
+			int s = farmState[row][col];
 			if (s == 0) continue;
-			int sx = c * TILE_SIZE - cameraX;
-			int sy = r * TILE_SIZE - cameraY;
-			if (sx + TILE_SIZE < 0 || sx > CLIENT_W) continue;
-			if (sy + TILE_SIZE < 0 || sy > CLIENT_H) continue;
 
-			HBITMAP src = (s == 1) ? g_hBitmap_cultivated : g_hBitmap_wet;
-			if (src == NULL) continue;
-			HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
-			TransparentBlt(hDC, sx, sy, TILE_SIZE, TILE_SIZE,
-				memDC, 0, 0, TILE_SIZE, TILE_SIZE,
-				EXT_TRANSPARENT);
-			SelectObject(memDC, oldB);
+			HBITMAP hTileBmp = (s == 1) ? g_hBitmap_cultivated : g_hBitmap_wet;
+			if (hTileBmp == NULL) continue;
+
+			// 타일 절대(World) 좌표
+			int worldTileX = col * 32;
+			int worldTileY = row * 32;
+
+			// 화면 좌표 = 절대 - 카메라
+			int screenX = worldTileX - cameraX;
+			int screenY = worldTileY - cameraY;
+
+			// 화면 컬링
+			if (screenX + 32 < 0 || screenX > CLIENT_W) continue;
+			if (screenY + 32 < 0 || screenY > CLIENT_H) continue;
+
+			// 32x32 크기 고정으로 그림 (작물보다 먼저)
+			SelectObject(hdcTileMem, hTileBmp);
+			TransparentBlt(hdc,
+				screenX, screenY, 32, 32,
+				hdcTileMem, 0, 0, 32, 32,
+				RGB(255, 0, 255));
 		}
 	}
-	DeleteDC(memDC);
+	DeleteDC(hdcTileMem);
+}
+
+// ---------- 작물 그리기 (흙 32x32 안에 딱 맞춰 그림 — TransparentBlt 자동 축소) ----------
+// 원본 비트맵 크기가 48x64, 56x56 등으로 다양하지만 모두 32x32 흙 타일 안에 맞춰 출력.
+// (TransparentBlt 의 dest 사이즈와 src 사이즈가 다르면 자동 스케일링됨)
+void DrawCrops(HDC hdc) {
+	HDC hdcCropMem = CreateCompatibleDC(hdc);
+
+	for (int row = 0; row < MAP_TILE_H; row++) {
+		for (int col = 0; col < MAP_TILE_W; col++) {
+			int cropType  = g_cropType[row][col];
+			int growStage = g_growStage[row][col];
+			if (cropType == CROP_NONE) continue;
+			if (growStage < 0 || growStage > 3) continue;
+
+			HBITMAP hCropBmp = g_hBitmap_crop[cropType][growStage];
+			if (hCropBmp == NULL) continue;
+
+			// 1) 원본 크기 (src 영역)
+			BITMAP bmp;
+			GetObject(hCropBmp, sizeof(BITMAP), &bmp);
+			int cropW = bmp.bmWidth;
+			int cropH = bmp.bmHeight;
+
+			// 2) 타일 절대 좌표 (32x32 격자)
+			int worldTileX = col * 32;
+			int worldTileY = row * 32;
+			int screenX = worldTileX - cameraX;
+			int screenY = worldTileY - cameraY;
+
+			// 화면 컬링
+			if (screenX + 32 < 0 || screenX > CLIENT_W) continue;
+			if (screenY + 32 < 0 || screenY > CLIENT_H) continue;
+
+			// 3) 흙 타일(32x32) 영역 안에 딱 맞게 출력 — 원본은 cropW x cropH, 화면은 32x32
+			//    (dest 사이즈와 src 사이즈가 달라서 TransparentBlt 가 자동 축소함)
+			SelectObject(hdcCropMem, hCropBmp);
+			TransparentBlt(hdc,
+				screenX, screenY, 32, 32,            // 화면 32x32 dest
+				hdcCropMem, 0, 0, cropW, cropH,      // 원본 cropW x cropH src
+				RGB(255, 0, 255));
+		}
+	}
+
+	DeleteDC(hdcCropMem);
 }
 
 // ---------- 아이템(=도구) → 아이콘 비트맵 헬퍼 ----------
@@ -1006,10 +1152,17 @@ static void EquipInv4ToQuickslot(int inv4Idx, int quickIdx) {
 
 // ---------- 마우스 → 농사 상호작용 ----------
 void HandleFarmClick(int mx, int my) {
+	// [농사 상호작용은 SCENE_FARM 에서만]
+	if (g_currentScene != SCENE_FARM) return;
+
+	// ===== 그리드 스냅 (사용자 요청 공식) =====
+	// 마우스 화면 좌표 → 월드 좌표 → 32배수로 정규화 → 타일 인덱스
 	int worldX = mx + cameraX;
 	int worldY = my + cameraY;
-	int gridX = worldX / TILE_SIZE;
-	int gridY = worldY / TILE_SIZE;
+	int tileX  = (worldX / TILE_SIZE) * TILE_SIZE;   // 32 의 배수로 스냅된 월드 X
+	int tileY  = (worldY / TILE_SIZE) * TILE_SIZE;   // 32 의 배수로 스냅된 월드 Y
+	int gridX  = tileX / TILE_SIZE;                  // 배열 인덱스
+	int gridY  = tileY / TILE_SIZE;
 	if (gridX < 0 || gridX >= MAP_TILE_W) return;
 	if (gridY < 0 || gridY >= MAP_TILE_H) return;
 
@@ -1019,35 +1172,61 @@ void HandleFarmClick(int mx, int my) {
 	int dist = TileChebyshevDist(gridX, gridY, playerGX, playerGY);
 	if (dist > 2) return;
 
-	// 도구별 상태 변경
+	// 1) 호미: 일반 땅(0) → 경작(1)
 	if (g_currentTool == TOOL_HOE && farmState[gridY][gridX] == 0) {
-		// 타일(32x32) 사각형이 흙길/절벽/집 등 금지 영역과 조금이라도 겹치면 거부.
-		// (클릭한 픽셀만 검사하면 타일 가장자리에서 한 픽셀이라도 잔디면 통과돼 흙길 위에 갈리는 문제 발생)
-		int tileLeft = gridX * TILE_SIZE;
-		int tileTop = gridY * TILE_SIZE;
-		// 절벽
+		// 흙길/절벽/집 등 금지 영역에 걸치면 거부 (스냅된 tileX/tileY 기준)
 		for (int i = 0; i < CLIFF_RECT_COUNT; i++) {
 			RECT& r = g_cliffRects[i];
-			if (RectOverlap(tileLeft, tileTop, TILE_SIZE, TILE_SIZE,
+			if (RectOverlap(tileX, tileY, TILE_SIZE, TILE_SIZE,
 				r.left, r.top, r.right - r.left, r.bottom - r.top)) return;
 		}
-		// 흙길/벽 옆면 (나무 스폰 금지 영역과 동일)
 		for (int i = 0; i < NO_TREE_RECT_COUNT; i++) {
 			RECT& r = g_noTreeRects[i];
-			if (RectOverlap(tileLeft, tileTop, TILE_SIZE, TILE_SIZE,
+			if (RectOverlap(tileX, tileY, TILE_SIZE, TILE_SIZE,
 				r.left, r.top, r.right - r.left, r.bottom - r.top)) return;
 		}
-		// 집 본체 (충돌 영역과 동일)
-		if (RectOverlap(tileLeft, tileTop, TILE_SIZE, TILE_SIZE,
+		if (RectOverlap(tileX, tileY, TILE_SIZE, TILE_SIZE,
 			g_house.x + HOUSE_BLOCK_PAD_L,
 			g_house.y + HOUSE_BLOCK_PAD_T,
 			HOUSE_DRAW_W - HOUSE_BLOCK_PAD_L - HOUSE_BLOCK_PAD_R,
 			HOUSE_DRAW_H - HOUSE_BLOCK_PAD_T - HOUSE_BLOCK_PAD_B)) return;
-
-		farmState[gridY][gridX] = 1; // 경작
+		farmState[gridY][gridX] = 1;
+		return;
 	}
-	else if (g_currentTool == TOOL_WATER && farmState[gridY][gridX] == 1) {
-		farmState[gridY][gridX] = 2; // 물주기
+
+	// 2) 물뿌리개: 경작된 땅(1) → 물 준 땅(2)
+	if (g_currentTool == TOOL_WATER && farmState[gridY][gridX] == 1) {
+		farmState[gridY][gridX] = 2;
+		return;
+	}
+
+	// 3) 씨앗 심기: 물 준 땅(2) + 아직 작물 없음 + 씨앗 들고 있음
+	int seedCrop = SeedToCrop(g_currentTool);
+	if (seedCrop != CROP_NONE && farmState[gridY][gridX] == 2 && g_cropType[gridY][gridX] == CROP_NONE) {
+		// 씨앗 1개 소모 — 현재 선택된 퀵슬롯에서 차감
+		if (g_selectedQuickSlot >= 0 && quickSlots[g_selectedQuickSlot] == g_currentTool) {
+			g_quickCount[g_selectedQuickSlot]--;
+			if (g_quickCount[g_selectedQuickSlot] <= 0) {
+				quickSlots[g_selectedQuickSlot] = ITEM_NONE;
+				g_quickCount[g_selectedQuickSlot] = 0;
+				g_currentTool = ITEM_NONE;
+			}
+		}
+		g_cropType[gridY][gridX]   = seedCrop;
+		g_growStage[gridY][gridX]  = 0;        // 0: seed
+		g_plantedDay[gridY][gridX] = g_gameDay;
+		return;
+	}
+
+	// 4) 수확: growStage == 3 (ready) 인 작물 클릭 시 수확
+	if (g_cropType[gridY][gridX] != CROP_NONE && g_growStage[gridY][gridX] >= 3) {
+		ItemType harvestItem = CropToHarvestItem(g_cropType[gridY][gridX]);
+		AddItemToBag(harvestItem);
+		g_cropType[gridY][gridX]  = CROP_NONE;
+		g_growStage[gridY][gridX] = 0;
+		// 수확 후 땅은 경작된 상태(1)로 복귀 → 다시 물 주면 재배 가능
+		farmState[gridY][gridX] = 1;
+		return;
 	}
 }
 
@@ -2009,6 +2188,24 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		g_hBitmap_item[ITEM_FISH_PUFFERFISH]  = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Pufferfish_48x48.bmp"),      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		g_hBitmap_item[ITEM_FISH_SQUID]       = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Squid_48x48.bmp"),           IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
+		// ----- [작물 비트맵 로드] CropType × growStage 0~3 -----
+		g_hBitmap_crop[CROP_CARROT][0]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\carrot\\carrot_seed.bmp"),       IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_CARROT][1]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\carrot\\carrot_grow1.bmp"),      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_CARROT][2]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\carrot\\carrot_grow2.bmp"),      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_CARROT][3]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\carrot\\carrot_ready.bmp"),      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_POTATO][0]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\potato\\potato_seed.bmp"),       IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_POTATO][1]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\potato\\potato_grow1.bmp"),      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_POTATO][2]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\potato\\potato_grow2.bmp"),      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_POTATO][3]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\potato\\potato_ready.bmp"),      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_RHUBARB][0]    = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\rhubarb\\rhubarb_seed.bmp"),     IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_RHUBARB][1]    = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\rhubarb\\rhubarb_grow1.bmp"),    IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_RHUBARB][2]    = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\rhubarb\\rhubarb_grow2.bmp"),    IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_RHUBARB][3]    = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\rhubarb\\rhubarb_ready.bmp"),    IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_STRAWBERRY][0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\strawberry\\straw_seed.bmp"),    IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_STRAWBERRY][1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\strawberry\\straw_grow1.bmp"),   IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_STRAWBERRY][2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\strawberry\\straw_grow2.bmp"),   IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_STRAWBERRY][3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\strawberry\\straw_ready.bmp"),   IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+
 		InitTrees();
 		g_house.x = 705; g_house.y = 470;   // 절대 좌표 고정 (흙길 끝 빨간 영역)
 		g_house.currentFrame = 0; g_house.frameTimer = 0;
@@ -2020,13 +2217,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		g_isInventoryOpen = false;
 		g_selectedQuickSlot = -1;
 		g_selectedInv4 = -1;
-		// 퀵슬롯 초기 구성: 1=호미, 2=물뿌리개, 3=낚싯대, 4=도끼 (사용자 요청)
-		quickSlots[0] = ITEM_HOE;
-		quickSlots[1] = ITEM_WATER;
-		quickSlots[2] = ITEM_ROD;
-		quickSlots[3] = ITEM_AXE;
-		// 가방은 비워서 시작 (수확물이 채워질 자리)
-		for (int kk = 0; kk < INV4_COUNT; kk++) bagSlots[kk] = ITEM_NONE;
+		// 퀵슬롯 초기 구성: 1=호미, 2=물뿌리개, 3=낚싯대, 4=도끼
+		quickSlots[0] = ITEM_HOE;     g_quickCount[0] = 1;
+		quickSlots[1] = ITEM_WATER;   g_quickCount[1] = 1;
+		quickSlots[2] = ITEM_ROD;     g_quickCount[2] = 1;
+		quickSlots[3] = ITEM_AXE;     g_quickCount[3] = 1;
+		// 가방 초기화 (전부 비움)
+		for (int kk = 0; kk < INV4_COUNT; kk++) {
+			bagSlots[kk]   = ITEM_NONE;
+			g_bagCount[kk] = 0;
+		}
+		// 4가지 씨앗을 0~3번 슬롯에 1개씩 지급
+		bagSlots[0] = ITEM_SEED_CARROT;     g_bagCount[0] = 1;
+		bagSlots[1] = ITEM_SEED_POTATO;     g_bagCount[1] = 1;
+		bagSlots[2] = ITEM_SEED_RHUBARB;    g_bagCount[2] = 1;
+		bagSlots[3] = ITEM_SEED_STRAWBERRY; g_bagCount[3] = 1;
 		// (가방 초기화는 위에서 완료, 도끼는 퀵슬롯 4번에 장착됨)
 		for (int rr = 0; rr < MAP_TILE_H; rr++)
 			for (int cc = 0; cc < MAP_TILE_W; cc++) farmState[rr][cc] = 0;
@@ -2207,6 +2412,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 
 
 			DrawFarmTiles(backDC);
+			// 작물 (씨앗 → grow1 → grow2 → ready) — 카메라 오프셋 적용
+			DrawCrops(backDC);
 
 
 			// 그리기 순서: 집 먼저 → 나무 나중 (나무가 집 앞에 그려져 자연스럽게)
@@ -2229,14 +2436,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				g_gameDay, dayPart);
 			TextOut(backDC, 10, 10, infoBuf, (int)wcslen(infoBuf));
 
-			// ----- [낮/밤] 맵/캐릭터/오브젝트 위에 밤 오버레이 (UI 이전에) -----
-			DrawNightOverlay(backDC);
-
-			// ----- [확장] UI (화면 고정, 최상단 — 밤이라도 어두워지지 않음) -----
-			DrawQuickSlot(backDC);
-			DrawInventoryPanel(backDC);
-			// 드래그 중인 아이템은 가장 마지막에 그려서 모든 UI 위에 올라가도록
-			DrawDraggedItem(backDC);
+			// (밤 오버레이 + UI 는 switch 바깥 공통 영역에서 그려짐)
 			break;
 		}
 
@@ -2279,12 +2479,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			// 플레이어 앞에 있는 나무 나중에 (나무가 플레이어를 가리는 경우)
 			DrawFishingTrees(backDC, hBitmap_fishTree, playerFootY, true);
 
-			// [낮/밤] 맵/오브젝트 위에 밤 오버레이 (UI 이전에)
-			DrawNightOverlay(backDC);
-
-			// 툴바 및 인벤토리 (낚시 씬에서도 표시 — 밤이라도 어두워지지 않음)
-			DrawQuickSlot(backDC);
-			DrawInventoryPanel(backDC);
+			// (밤 오버레이 + UI 는 switch 바깥 공통 영역에서 그려짐)
 
 			SetBkMode(backDC, TRANSPARENT);
 			SetTextColor(backDC, RGB(255, 255, 255));
@@ -2433,9 +2628,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		}
 		}
 
-		// 플레이어참고(backDC, g_player.base, g_player.farming_arm);
+		// ============================================================
+		// [공통 렌더링 계층] switch 바깥 — 씬과 무관하게 항상 마지막에 그림.
+		// 순서:
+		//   1) 밤/낮 명암 (AlphaBlend) — 모든 게임 요소 위에 덮임
+		//   2) 1줄 퀵슬롯, 4x4 인벤토리 — 화면 고정, 밤이라도 어두워지지 않음
+		//   3) 드래그 중인 아이템 — 모든 UI 위에 표시
+		// ============================================================
+		// 상점/낚시미니게임 등 일부 씬은 시간 흐름 표현 안 해도 되면 여기 조건 추가 가능.
+		DrawNightOverlay(backDC);
+		DrawQuickSlot(backDC);
+		DrawInventoryPanel(backDC);
+		DrawDraggedItem(backDC);
 
-		// 화면으로 한 번에 복사 
+		// 화면으로 한 번에 복사
 		BitBlt(hDC, 0, 0, CLIENT_W, CLIENT_H, backDC, 0, 0, SRCCOPY);
 
 		// 정리
@@ -2479,11 +2685,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			break;
 		}
 
-		if (g_currentScene == SCENE_FARM) {
+		// ============================================================
+		// [전역 인벤토리 마우스 처리] — 씬과 무관하게 모든 맵에서 작동
+		// ============================================================
+		{
 			int mx = LOWORD(lParam);
 			int my = HIWORD(lParam);
 
-			// 1) 가방 아이콘 클릭 → 인벤토리 토글
+			// 1) 가방 아이콘 클릭 → 인벤토리 토글 (모든 씬에서)
 			if (IsClickInBag(mx, my)) {
 				g_isInventoryOpen = !g_isInventoryOpen;
 				g_selectedInv4 = -1;
@@ -2491,40 +2700,50 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				break;
 			}
 
-			// 2) 인벤토리 열려있으면 드래그 앤 드롭 — 4x4 셀 또는 퀵슬롯에서 드래그 시작
+			// 2) 인벤토리 열려있으면 드래그 앤 드롭 (모든 씬에서)
 			if (g_isInventoryOpen) {
-				// 4x4 가방 셀
 				int cell = HitInv4Cell(mx, my);
 				if (cell >= 0) {
-					BeginDrag(cell, false);   // false = 가방에서 시작
+					BeginDrag(cell, false);
 					g_dragMouseX = mx; g_dragMouseY = my;
 					InvalidateRect(hWnd, NULL, FALSE);
 					break;
 				}
-				// 퀵슬롯
 				int qs = HitQuickSlot(mx, my);
 				if (qs >= 0) {
-					BeginDrag(qs, true);      // true = 퀵슬롯에서 시작
+					BeginDrag(qs, true);
 					g_dragMouseX = mx; g_dragMouseY = my;
+					InvalidateRect(hWnd, NULL, FALSE);
+					break;
+				}
+				// 인벤토리 패널 안 클릭은 흡수 (맵으로 안 넘어가게)
+				if (IsClickOnUI(mx, my)) {
 					InvalidateRect(hWnd, NULL, FALSE);
 					break;
 				}
 			}
 			else {
-				// 인벤토리 닫혀있으면 퀵슬롯 클릭 = 도구 선택
+				// 인벤토리 닫혀있으면 퀵슬롯 클릭 = 도구 선택 (모든 씬에서)
 				int qs = HitQuickSlot(mx, my);
 				if (qs >= 0) {
 					SelectQuickSlot(qs);
 					InvalidateRect(hWnd, NULL, FALSE);
 					break;
 				}
+				// 퀵슬롯 패널 영역 클릭은 흡수
+				if (IsClickOnUI(mx, my)) {
+					InvalidateRect(hWnd, NULL, FALSE);
+					break;
+				}
 			}
+		}
 
-			// 4) UI 다른 영역(배경 패널 등)은 그냥 흡수
-			if (IsClickOnUI(mx, my)) {
-				InvalidateRect(hWnd, NULL, FALSE);
-				break;
-			}
+		// ============================================================
+		// [SCENE_FARM 전용 맵 상호작용] — 호미/물/씨앗/도끼/수확
+		// ============================================================
+		if (g_currentScene == SCENE_FARM) {
+			int mx = LOWORD(lParam);
+			int my = HIWORD(lParam);
 
 			// 5) 맵 클릭 처리 (인벤토리 닫혀있을 때만)
 			if (!g_isInventoryOpen) {
@@ -2734,10 +2953,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				if (g_currentScene == SCENE_FARM || g_currentScene == SCENE_FISHING) {
 					UpdateCamera();
 				}
-				// [확장] 게임 시간(낮/밤) 진행 — 농장/낚시 씬에서만. 상점에서는 시간 정지.
-				if (g_currentScene == SCENE_FARM || g_currentScene == SCENE_FISHING) {
-					UpdateGameTime();
-				}
+				// [전역 유지] 게임 시간(낮/밤) 진행 — 씬과 무관하게 항상 계속 흐름
+				UpdateGameTime();
 				// 농장 씬: 집 애니메이션 + 문열림 완료 시 SCENE_SHOP
 				if (g_currentScene == SCENE_FARM) {
 					UpdateHouseAnim();
