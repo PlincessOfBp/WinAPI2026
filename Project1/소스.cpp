@@ -291,7 +291,7 @@ static int g_gold = 500; // 초기 골드 (외부에서 조정 가능)
 #define SHOP_SEED_COUNT 4
 static const wchar_t* g_seedNames[SHOP_SEED_COUNT] = { L"감자 씨앗", L"당근 씨앗", L"대황 씨앗", L"딸기 씨앗" };
 static int             g_seedPrices[SHOP_SEED_COUNT] = { 25, 15, 50, 100 };
-// 씨앗 아이템 화면 위치 
+// 씨앗 아이템 화면 위치 (WM_PAINT의 TransparentBlt 좌표와 동일)
 static int g_seedItemX[SHOP_SEED_COUNT] = { 100 + 25, 100 + 95, 100 + 95 + 70, 100 + 90 + 140 };
 static int g_seedItemY[SHOP_SEED_COUNT] = { 200 + 25, 200 + 25, 200 + 25,      200 + 25 };
 #define SHOP_SEED_W 48
@@ -2031,6 +2031,24 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			HBITMAP hOldShop = (HBITMAP)SelectObject(hShopDC, hBitmap_shopUi[0]);
 			TransparentBlt(backDC, 550, 200, 200, 200,
 				hShopDC, 0, 0, 300, 300, RGB(255, 0, 255));
+
+			// 현재 보유 골드 상시 표시
+			{
+				HFONT hFontGold = CreateFont(
+					20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+					DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+					DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, TEXT("맑은 고딕")
+				);
+				HFONT hOldFontGold = (HFONT)SelectObject(backDC, hFontGold);
+				SetBkMode(backDC, TRANSPARENT);
+				SetTextColor(backDC, RGB(0, 0, 0));
+				wchar_t goldStr[64];
+				wsprintfW(goldStr, L"보유 골드: %d G", g_gold);
+				TextOut(backDC, 560, 360, goldStr, (int)wcslen(goldStr));
+				SetTextColor(backDC, RGB(0, 0, 0));
+				SelectObject(backDC, hOldFontGold);
+				DeleteObject(hFontGold);
+			}
 			HFONT hFontBig = CreateFont(
 				40, 0, 0, 0,
 				FW_BOLD,
