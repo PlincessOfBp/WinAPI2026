@@ -180,6 +180,61 @@ static void AddFishToInventory(FishItemType type) {
 static int cameraX = 0;
 static int cameraY = 0;
 
+//여기가 시간 바꾸는데니깐 너가 바꾸고 싶으면 바꿔.
+// [낮/밤 시스템] g_timeOfDay 0.0(아침) ~ 1.0(다음날 직전)
+//   - 시간대 구간:
+//     * 0.00 ~ 0.50  낮            (Alpha = 0)
+//     * 0.50 ~ 0.65  저녁 (어두워짐, 0 → 180)
+//     * 0.65 ~ 0.90  밤            (Alpha = 180)
+//     * 0.90 ~ 1.00  아침 (밝아짐, 180 → 0)
+//   - g_timeOfDay 가 1.0 이상이면 g_gameDay++ 하고 0.0 리셋
+
+static int   g_gameDay    = 1;       // 현재 일차 (1일차부터 시작)
+static float g_timeOfDay  = 0.0f;    // 하루의 진행도 (0.0 ~ 1.0)
+
+// 하루 길이 조정용: g_timeOfDay 가 한 틱(30ms)당 얼마나 증가할지
+// (현실 1초 ≈ 33틱 → 하루 = 120초 → 4000틱 → 1/4000 = 0.00025)
+#define TIME_OF_DAY_STEP   (1.0f / 4000.0f)
+
+// 현재 시각에 따른 밤 오버레이 알파(0~255) 계산
+static int CalcNightAlpha() {
+	float t = g_timeOfDay;
+	if (t < 0.50f) return 0;                                  // 낮
+	if (t < 0.65f) return (int)((t - 0.50f) / 0.15f * 180);   // 저녁 fade out
+	if (t < 0.90f) return 180;                                // 밤 (최대 어두움)
+	return (int)((1.00f - t) / 0.10f * 180);                  // 아침 fade in
+}
+
+// 검은(살짝 푸른) 반투명 사각형으로 화면 전체를 덮어 밤 연출.
+// 호출 시점: 맵/캐릭터/오브젝트 그린 후, UI 그리기 전.
+void DrawNightOverlay(HDC hDC) {
+	int alpha = CalcNightAlpha();
+	if (alpha <= 0) return;
+	HDC memDC = CreateCompatibleDC(hDC);
+	HBITMAP bmp = CreateCompatibleBitmap(hDC, CLIENT_W, CLIENT_H);
+	HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, bmp);
+	// 약간 푸른 빛의 검은색이 자연스러운 밤 느낌
+	HBRUSH br = CreateSolidBrush(RGB(5, 10, 40));
+	RECT r = { 0, 0, CLIENT_W, CLIENT_H };
+	FillRect(memDC, &r, br);
+	DeleteObject(br);
+	BLENDFUNCTION bf = { AC_SRC_OVER, 0, (BYTE)alpha, 0 };
+	AlphaBlend(hDC, 0, 0, CLIENT_W, CLIENT_H,
+		memDC, 0, 0, CLIENT_W, CLIENT_H, bf);
+	SelectObject(memDC, oldBmp);
+	DeleteObject(bmp);
+	DeleteDC(memDC);
+}
+
+// 게임 시간 진행 (매 틱마다 호출)
+void UpdateGameTime() {
+	g_timeOfDay += TIME_OF_DAY_STEP;
+	if (g_timeOfDay >= 1.0f) {
+		g_timeOfDay = 0.0f;
+		g_gameDay++;
+	}
+}
+
 // ---------- 전방 선언: 아래쪽에 정의된 함수 미리 알려주기 ----------
 static bool RectOverlap(int ax, int ay, int aw, int ah,
 	int bx, int by, int bw, int bh);
@@ -2084,10 +2139,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			// 안내
 			SetBkMode(backDC, TRANSPARENT);
 			SetTextColor(backDC, RGB(255, 255, 255));
-			const wchar_t* info = L"[농장] 방향키/WASD 이동, 1/2/3 도구, E 인벤토리";
-			TextOut(backDC, 10, 10, info, (int)wcslen(info));
+			// 상단 안내 + 게임 시간/일차 표시
+			wchar_t infoBuf[160];
+			const wchar_t* dayPart;
+			if (g_timeOfDay < 0.50f)      dayPart = L"낮";
+			else if (g_timeOfDay < 0.65f) dayPart = L"저녁";
+			else if (g_timeOfDay < 0.90f) dayPart = L"밤";
+			else                          dayPart = L"새벽";
+			wsprintfW(infoBuf, L"[농장] DAY %d / %s   |   방향키 이동, 1/2/3 도구, E 인벤토리",
+				g_gameDay, dayPart);
+			TextOut(backDC, 10, 10, infoBuf, (int)wcslen(infoBuf));
 
-			// ----- [확장] UI (화면 고정, 최상단) -----
+			// ----- [낮/밤] 맵/캐릭터/오브젝트 위에 밤 오버레이 (UI 이전에) -----
+			DrawNightOverlay(backDC);
+
+			// ----- [확장] UI (화면 고정, 최상단 — 밤이라도 어두워지지 않음) -----
 			DrawQuickSlot(backDC);
 			DrawInventoryPanel(backDC);
 			// 드래그 중인 아이템은 가장 마지막에 그려서 모든 UI 위에 올라가도록
@@ -2134,7 +2200,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			// 플레이어 앞에 있는 나무 나중에 (나무가 플레이어를 가리는 경우)
 			DrawFishingTrees(backDC, hBitmap_fishTree, playerFootY, true);
 
-			// 툴바 및 인벤토리 (낚시 씬에서도 표시)
+			// [낮/밤] 맵/오브젝트 위에 밤 오버레이 (UI 이전에)
+			DrawNightOverlay(backDC);
+
+			// 툴바 및 인벤토리 (낚시 씬에서도 표시 — 밤이라도 어두워지지 않음)
 			DrawQuickSlot(backDC);
 			DrawInventoryPanel(backDC);
 
@@ -2585,6 +2654,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				// [확장] 카메라는 농장/낚시 양쪽 모두 따라가도록 통일 (200% 동일 비율)
 				if (g_currentScene == SCENE_FARM || g_currentScene == SCENE_FISHING) {
 					UpdateCamera();
+				}
+				// [확장] 게임 시간(낮/밤) 진행 — 농장/낚시 씬에서만. 상점에서는 시간 정지.
+				if (g_currentScene == SCENE_FARM || g_currentScene == SCENE_FISHING) {
+					UpdateGameTime();
 				}
 				// 농장 씬: 집 애니메이션 + 문열림 완료 시 SCENE_SHOP
 				if (g_currentScene == SCENE_FARM) {
