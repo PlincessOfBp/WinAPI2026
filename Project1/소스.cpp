@@ -131,7 +131,7 @@ struct DroppedFish {
 	int   floatTimer;       // 부유 애니 카운터 (0~39 반복)
 	int   graceTick;        // 획득 유예 틱 카운터 (0.5초 = 5틱 @ 100ms)
 };
-static DroppedFish g_droppedFish = { 0, 0, FISH_ITEM_NONE, false, 0, 0 };
+static std::vector<DroppedFish> g_droppedFishes;
 // 유예 시간 (타이머 0001 기준 100ms/틱) — 이 값만 바꾸면 외부 조정 가능
 // 10 = 1.0초, 5 = 0.5초, 20 = 2.0초
 static int g_fishGraceTicks = 10;
@@ -189,8 +189,8 @@ static int cameraY = 0;
 //     * 0.90 ~ 1.00  아침 (밝아짐, 180 → 0)
 //   - g_timeOfDay 가 1.0 이상이면 g_gameDay++ 하고 0.0 리셋
 
-static int   g_gameDay    = 1;       // 현재 일차 (1일차부터 시작)
-static float g_timeOfDay  = 0.0f;    // 하루의 진행도 (0.0 ~ 1.0)
+static int   g_gameDay = 1;       // 현재 일차 (1일차부터 시작)
+static float g_timeOfDay = 0.0f;    // 하루의 진행도 (0.0 ~ 1.0)
 
 // 하루 길이 조정용: g_timeOfDay 가 한 틱(30ms)당 얼마나 증가할지
 // (현실 1초 ≈ 33틱 → 하루 = 120초 → 4000틱 → 1/4000 = 0.00025)
@@ -344,24 +344,24 @@ struct FarmTile {
 };
 // (실제 데이터는 평행 배열로 유지 — 기존 코드 영향 최소화)
 // growStage: 0=seed, 1=grow1, 2=grow2, 3=ready
-static int g_cropType[MAP_TILE_H][MAP_TILE_W]   = { 0, };
-static int g_growStage[MAP_TILE_H][MAP_TILE_W]  = { 0, };
+static int g_cropType[MAP_TILE_H][MAP_TILE_W] = { 0, };
+static int g_growStage[MAP_TILE_H][MAP_TILE_W] = { 0, };
 static int g_plantedDay[MAP_TILE_H][MAP_TILE_W] = { 0, };
 
 // FarmTile 헬퍼: 격자 인덱스(col, row)로 FarmTile 정보 묶어서 가져오기
 static FarmTile GetFarmTile(int col, int row) {
 	FarmTile t;
-	t.isTilled   = farmState[row][col];
-	t.isWatered  = (farmState[row][col] == 2) ? 1 : 0;
-	t.cropType   = g_cropType[row][col];
-	t.growStage  = g_growStage[row][col];
+	t.isTilled = farmState[row][col];
+	t.isWatered = (farmState[row][col] == 2) ? 1 : 0;
+	t.cropType = g_cropType[row][col];
+	t.growStage = g_growStage[row][col];
 	t.plantedDay = g_plantedDay[row][col];
 	return t;
 }
 static void SetFarmTile(int col, int row, const FarmTile& t) {
-	farmState[row][col]    = t.isTilled;
-	g_cropType[row][col]   = t.cropType;
-	g_growStage[row][col]  = t.growStage;
+	farmState[row][col] = t.isTilled;
+	g_cropType[row][col] = t.cropType;
+	g_growStage[row][col] = t.growStage;
 	g_plantedDay[row][col] = t.plantedDay;
 }
 
@@ -395,7 +395,11 @@ enum ToolType {
 	ITEM_FISH_PUFFERFISH = 11,
 	ITEM_FISH_SQUID = 12,
 	ITEM_LOG = 13,          // 통나무 (도끼로 나무 벌목 시 드롭)
-	ITEM_COUNT = 14
+	ITEM_CARROT = 14,       // 당근 (수확)
+	ITEM_POTATO = 15,       // 감자 (수확)
+	ITEM_RHUBARB = 16,      // 대황 (수확)
+	ITEM_STRAWBERRY = 17,   // 딸기 (수확)
+	ITEM_COUNT = 18
 };
 // ItemType 은 ToolType 동의어 (사용자 요청 이름)
 typedef ToolType ItemType;
@@ -413,8 +417,8 @@ struct DroppedItem {
 	int      floatTimer;
 	int      graceTick;
 };
-static DroppedItem g_droppedItem = { 0, 0, ITEM_NONE, false, 0, 0 };
-static int g_itemGraceTicks   = 5;  // 획득 유예 틱 수 — 외부 조정 가능 (5 = 0.5초)
+static std::vector<DroppedItem> g_droppedItems;
+static int g_itemGraceTicks = 5;  // 획득 유예 틱 수 — 외부 조정 가능 (5 = 0.5초)
 #define DROPPED_ITEM_FLOAT_RANGE    3
 #define DROPPED_ITEM_FLOAT_PERIOD  40
 #define DROPPED_ITEM_DRAW_W        48
@@ -432,10 +436,10 @@ static int SeedToCrop(ItemType seed) {
 }
 static ItemType CropToHarvestItem(int crop) {
 	switch (crop) {
-	case CROP_CARROT:     return ITEM_SEED_CARROT;
-	case CROP_POTATO:     return ITEM_SEED_POTATO;
-	case CROP_RHUBARB:    return ITEM_SEED_RHUBARB;
-	case CROP_STRAWBERRY: return ITEM_SEED_STRAWBERRY;
+	case CROP_CARROT:     return ITEM_CARROT;
+	case CROP_POTATO:     return ITEM_POTATO;
+	case CROP_RHUBARB:    return ITEM_RHUBARB;
+	case CROP_STRAWBERRY: return ITEM_STRAWBERRY;
 	default: return ITEM_NONE;
 	}
 }
@@ -512,7 +516,7 @@ struct InventorySlot {
 	int      count;
 };
 static int g_quickCount[QUICKSLOT_COUNT] = { 1, 1, 1, 1 };   // 도구는 1개 기본
-static int g_bagCount[INV4_COUNT]        = { 0, };           // 가방 빈칸 = 0
+static int g_bagCount[INV4_COUNT] = { 0, };           // 가방 빈칸 = 0
 
 // 헬퍼: 슬롯 한 칸 정보 가져오기/넣기
 static InventorySlot GetQuickInv(int i) {
@@ -520,7 +524,7 @@ static InventorySlot GetQuickInv(int i) {
 	return s;
 }
 static void SetQuickInv(int i, InventorySlot s) {
-	g_quickSlot[i]  = s.type;
+	g_quickSlot[i] = s.type;
 	g_quickCount[i] = s.count;
 }
 static InventorySlot GetBagInv(int i) {
@@ -528,7 +532,7 @@ static InventorySlot GetBagInv(int i) {
 	return s;
 }
 static void SetBagInv(int i, InventorySlot s) {
-	g_inv4[i]    = s.type;
+	g_inv4[i] = s.type;
 	g_bagCount[i] = s.count;
 }
 
@@ -536,9 +540,9 @@ static void SetBagInv(int i, InventorySlot s) {
 static HBITMAP g_hBitmap_item[ITEM_COUNT] = { NULL, };
 
 // 드래그 앤 드롭 상태
-static int      g_draggedSlotIndex   = -1;     // 드래그 시작한 슬롯 인덱스 (-1: 드래그 중 아님)
+static int      g_draggedSlotIndex = -1;     // 드래그 시작한 슬롯 인덱스 (-1: 드래그 중 아님)
 static bool     g_isDraggingFromQuick = false; // 드래그 시작이 퀵슬롯인지 가방인지
-static ItemType g_draggedItem        = ITEM_NONE;
+static ItemType g_draggedItem = ITEM_NONE;
 static int      g_dragMouseX = 0, g_dragMouseY = 0;  // 현재 마우스 위치 (드래그 아이콘 그리기용)
 
 // ---------- UI 화면 좌표 ----------
@@ -712,7 +716,7 @@ void DrawFarmTrees(HDC hDC) {
 		// 흔들림 오프셋: shakeTimer 홀수면 오른쪽, 짝수면 왼쪽
 		int shakeOff = 0;
 		if (t.shakeTimer > 0) {
-			if (t.shakeTimer % 2 == 1) shakeOff =  TREE_SHAKE_OFFX;
+			if (t.shakeTimer % 2 == 1) shakeOff = TREE_SHAKE_OFFX;
 			else                       shakeOff = -TREE_SHAKE_OFFX;
 		}
 		int sx = t.x - cameraX + shakeOff;
@@ -822,7 +826,7 @@ void DrawCrops(HDC hdc) {
 
 	for (int row = 0; row < MAP_TILE_H; row++) {
 		for (int col = 0; col < MAP_TILE_W; col++) {
-			int cropType  = g_cropType[row][col];
+			int cropType = g_cropType[row][col];
 			int growStage = g_growStage[row][col];
 			if (cropType == CROP_NONE) continue;
 			if (growStage < 0 || growStage > 3) continue;
@@ -900,14 +904,14 @@ void AddItemToBag(ItemType item) {
 	// 2순위 (빈칸 탐색) — 가방 우선
 	for (int i = 0; i < INV4_COUNT; i++) {
 		if (bagSlots[i] == ITEM_NONE) {
-			bagSlots[i]    = item;
-			g_bagCount[i]  = 1;
+			bagSlots[i] = item;
+			g_bagCount[i] = 1;
 			return;
 		}
 	}
 	for (int i = 0; i < QUICKSLOT_COUNT; i++) {
 		if (quickSlots[i] == ITEM_NONE) {
-			quickSlots[i]   = item;
+			quickSlots[i] = item;
 			g_quickCount[i] = 1;
 			return;
 		}
@@ -922,16 +926,16 @@ static void BeginDrag(int slotIdx, bool fromQuick) {
 	if (slotIdx < 0) return;
 	ItemType item = fromQuick ? quickSlots[slotIdx] : bagSlots[slotIdx];
 	if (item == ITEM_NONE) return;   // 빈 슬롯은 드래그 시작 안 함
-	g_draggedSlotIndex   = slotIdx;
+	g_draggedSlotIndex = slotIdx;
 	g_isDraggingFromQuick = fromQuick;
-	g_draggedItem        = item;
+	g_draggedItem = item;
 }
 
 // 드래그 취소 (원위치)
 static void CancelDrag() {
-	g_draggedSlotIndex   = -1;
+	g_draggedSlotIndex = -1;
 	g_isDraggingFromQuick = false;
-	g_draggedItem        = ITEM_NONE;
+	g_draggedItem = ITEM_NONE;
 }
 
 // 드래그 끝: 놓은 슬롯과 시작 슬롯의 아이템 swap
@@ -949,7 +953,7 @@ static void EndDrag(int dropSlotIdx, bool dropOnQuick) {
 	}
 	// 두 슬롯의 (type + count) 묶음을 swap
 	InventorySlot src = g_isDraggingFromQuick ? GetQuickInv(g_draggedSlotIndex) : GetBagInv(g_draggedSlotIndex);
-	InventorySlot dst = dropOnQuick           ? GetQuickInv(dropSlotIdx)        : GetBagInv(dropSlotIdx);
+	InventorySlot dst = dropOnQuick ? GetQuickInv(dropSlotIdx) : GetBagInv(dropSlotIdx);
 
 	if (g_isDraggingFromQuick) SetQuickInv(g_draggedSlotIndex, dst);
 	else                       SetBagInv(g_draggedSlotIndex, dst);
@@ -1185,10 +1189,10 @@ void HandleFarmClick(int mx, int my) {
 	// 마우스 화면 좌표 → 월드 좌표 → 32배수로 정규화 → 타일 인덱스
 	int worldX = mx + cameraX;
 	int worldY = my + cameraY;
-	int tileX  = (worldX / TILE_SIZE) * TILE_SIZE;   // 32 의 배수로 스냅된 월드 X
-	int tileY  = (worldY / TILE_SIZE) * TILE_SIZE;   // 32 의 배수로 스냅된 월드 Y
-	int gridX  = tileX / TILE_SIZE;                  // 배열 인덱스
-	int gridY  = tileY / TILE_SIZE;
+	int tileX = (worldX / TILE_SIZE) * TILE_SIZE;   // 32 의 배수로 스냅된 월드 X
+	int tileY = (worldY / TILE_SIZE) * TILE_SIZE;   // 32 의 배수로 스냅된 월드 Y
+	int gridX = tileX / TILE_SIZE;                  // 배열 인덱스
+	int gridY = tileY / TILE_SIZE;
 	if (gridX < 0 || gridX >= MAP_TILE_W) return;
 	if (gridY < 0 || gridY >= MAP_TILE_H) return;
 
@@ -1238,8 +1242,8 @@ void HandleFarmClick(int mx, int my) {
 				g_currentTool = ITEM_NONE;
 			}
 		}
-		g_cropType[gridY][gridX]   = seedCrop;
-		g_growStage[gridY][gridX]  = 0;        // 0: seed
+		g_cropType[gridY][gridX] = seedCrop;
+		g_growStage[gridY][gridX] = 0;        // 0: seed
 		g_plantedDay[gridY][gridX] = g_gameDay;
 		return;
 	}
@@ -1249,18 +1253,18 @@ void HandleFarmClick(int mx, int my) {
 		ItemType harvestItem = CropToHarvestItem(g_cropType[gridY][gridX]);
 
 		// 작물 드롭 (물고기 드롭과 동일한 로직)
-		g_droppedItem.worldX    = tileX + TILE_SIZE / 2;
-		g_droppedItem.worldY    = tileY + TILE_SIZE;
-		g_droppedItem.type      = harvestItem;
-		g_droppedItem.active    = true;
-		g_droppedItem.floatTimer = 0;
-		g_droppedItem.graceTick  = 0;
-		// TODO: 인벤토리 충분히 구현 시 아이템 인벤토리에 추가 구현
-		// ex) AddItemToBag(harvestItem);
+		DroppedItem newItem;
+		newItem.worldX = tileX + TILE_SIZE / 2;
+		newItem.worldY = tileY + TILE_SIZE;
+		newItem.type = harvestItem;
+		newItem.active = true;
+		newItem.floatTimer = 0;
+		newItem.graceTick = 0;
+		g_droppedItems.push_back(newItem);
 
-		g_cropType[gridY][gridX]  = CROP_NONE;
+		g_cropType[gridY][gridX] = CROP_NONE;
 		g_growStage[gridY][gridX] = 0;
-		farmState[gridY][gridX]   = 1;
+		farmState[gridY][gridX] = 1;
 		return;
 	}
 }
@@ -1295,12 +1299,14 @@ static void TryChopTree(int mx, int my) {
 		if (t.hp <= 0) {
 			t.isAlive = false;
 			// 통나무 드롭 (나무 중심 위치)
-			g_droppedItem.worldX   = t.x + t.w / 2;
-			g_droppedItem.worldY   = t.y + t.h;
-			g_droppedItem.type     = ITEM_LOG;
-			g_droppedItem.active   = true;
-			g_droppedItem.floatTimer = 0;
-			g_droppedItem.graceTick  = 0;
+			DroppedItem newLog;
+			newLog.worldX = t.x + t.w / 2;
+			newLog.worldY = t.y + t.h;
+			newLog.type = ITEM_LOG;
+			newLog.active = true;
+			newLog.floatTimer = 0;
+			newLog.graceTick = 0;
+			g_droppedItems.push_back(newLog);
 		}
 		return; // 한 번 클릭에 한 그루만
 	}
@@ -1477,55 +1483,59 @@ static TreeInfo g_treeInfos[3] = {
 
 // ---------- 바닥에 떨어진 물고기 그리기 ----------
 static void DrawDroppedFish(HDC hDC) {
-	if (!g_droppedFish.active) return;
-	if (g_droppedFish.type == FISH_ITEM_NONE) return;
-	HBITMAP src = g_hBitmap_fishItem[g_droppedFish.type];
-	if (src == NULL) return;
+	for (size_t i = 0; i < g_droppedFishes.size(); i++) {
+		DroppedFish& fish = g_droppedFishes[i];
+		if (!fish.active) continue;
+		if (fish.type == FISH_ITEM_NONE) continue;
+		HBITMAP src = g_hBitmap_fishItem[fish.type];
+		if (src == NULL) continue;
 
-	// 부유 오프셋: sin 대신 타이머로 0→+3→0→-3→0 근사
-	// floatTimer 0~39: 0~9 올라감, 10~19 내려감, 20~29 내려감, 30~39 올라감
-	int ft = g_droppedFish.floatTimer;
-	int floatOff = 0;
-	if (ft < 10)       floatOff = -(ft * DROPPED_FISH_FLOAT_RANGE / 10);
-	else if (ft < 20)  floatOff = -((19 - ft) * DROPPED_FISH_FLOAT_RANGE / 10);
-	else if (ft < 30)  floatOff = (ft - 20) * DROPPED_FISH_FLOAT_RANGE / 10;
-	else               floatOff = (39 - ft) * DROPPED_FISH_FLOAT_RANGE / 10;
+		int ft = fish.floatTimer;
+		int floatOff = 0;
+		if (ft < 10)       floatOff = -(ft * DROPPED_FISH_FLOAT_RANGE / 10);
+		else if (ft < 20)  floatOff = -((19 - ft) * DROPPED_FISH_FLOAT_RANGE / 10);
+		else if (ft < 30)  floatOff = (ft - 20) * DROPPED_FISH_FLOAT_RANGE / 10;
+		else               floatOff = (39 - ft) * DROPPED_FISH_FLOAT_RANGE / 10;
 
-	int sx = g_droppedFish.worldX - FISH_ITEM_DRAW_W / 2 - cameraX;
-	int sy = g_droppedFish.worldY - FISH_ITEM_DRAW_H / 2 + floatOff - cameraY;
+		int sx = fish.worldX - FISH_ITEM_DRAW_W / 2 - cameraX;
+		int sy = fish.worldY - FISH_ITEM_DRAW_H / 2 + floatOff - cameraY;
 
-	HDC memDC = CreateCompatibleDC(hDC);
-	HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
-	TransparentBlt(hDC, sx, sy, FISH_ITEM_DRAW_W, FISH_ITEM_DRAW_H,
-		memDC, 0, 0, FISH_ITEM_DRAW_W, FISH_ITEM_DRAW_H, RGB(255, 0, 255));
-	SelectObject(memDC, oldB);
-	DeleteDC(memDC);
+		HDC memDC = CreateCompatibleDC(hDC);
+		HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
+		TransparentBlt(hDC, sx, sy, FISH_ITEM_DRAW_W, FISH_ITEM_DRAW_H,
+			memDC, 0, 0, FISH_ITEM_DRAW_W, FISH_ITEM_DRAW_H, RGB(255, 0, 255));
+		SelectObject(memDC, oldB);
+		DeleteDC(memDC);
+	}
 }
 
 // ---------- 바닥에 떨어진 통나무/작물 그리기 (물고기 드롭과 동일 로직) ----------
 static void DrawDroppedItem(HDC hDC) {
-	if (!g_droppedItem.active) return;
-	if (g_droppedItem.type == ITEM_NONE) return;
-	if (g_droppedItem.type >= ITEM_COUNT) return;
-	HBITMAP src = g_hBitmap_item[g_droppedItem.type];
-	if (src == NULL) return;
+	for (size_t i = 0; i < g_droppedItems.size(); i++) {
+		DroppedItem& item = g_droppedItems[i];
+		if (!item.active) continue;
+		if (item.type == ITEM_NONE) continue;
+		if (item.type >= ITEM_COUNT) continue;
+		HBITMAP src = g_hBitmap_item[item.type];
+		if (src == NULL) continue;
 
-	int ft = g_droppedItem.floatTimer;
-	int floatOff = 0;
-	if (ft < 10)       floatOff = -(ft * DROPPED_ITEM_FLOAT_RANGE / 10);
-	else if (ft < 20)  floatOff = -((19 - ft) * DROPPED_ITEM_FLOAT_RANGE / 10);
-	else if (ft < 30)  floatOff = (ft - 20) * DROPPED_ITEM_FLOAT_RANGE / 10;
-	else               floatOff = (39 - ft) * DROPPED_ITEM_FLOAT_RANGE / 10;
+		int ft = item.floatTimer;
+		int floatOff = 0;
+		if (ft < 10)       floatOff = -(ft * DROPPED_ITEM_FLOAT_RANGE / 10);
+		else if (ft < 20)  floatOff = -((19 - ft) * DROPPED_ITEM_FLOAT_RANGE / 10);
+		else if (ft < 30)  floatOff = (ft - 20) * DROPPED_ITEM_FLOAT_RANGE / 10;
+		else               floatOff = (39 - ft) * DROPPED_ITEM_FLOAT_RANGE / 10;
 
-	int sx = g_droppedItem.worldX - DROPPED_ITEM_DRAW_W / 2 - cameraX;
-	int sy = g_droppedItem.worldY - DROPPED_ITEM_DRAW_H / 2 + floatOff - cameraY;
+		int sx = item.worldX - DROPPED_ITEM_DRAW_W / 2 - cameraX;
+		int sy = item.worldY - DROPPED_ITEM_DRAW_H / 2 + floatOff - cameraY;
 
-	HDC memDC = CreateCompatibleDC(hDC);
-	HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
-	TransparentBlt(hDC, sx, sy, DROPPED_ITEM_DRAW_W, DROPPED_ITEM_DRAW_H,
-		memDC, 0, 0, DROPPED_ITEM_DRAW_W, DROPPED_ITEM_DRAW_H, EXT_TRANSPARENT);
-	SelectObject(memDC, oldB);
-	DeleteDC(memDC);
+		HDC memDC = CreateCompatibleDC(hDC);
+		HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
+		TransparentBlt(hDC, sx, sy, DROPPED_ITEM_DRAW_W, DROPPED_ITEM_DRAW_H,
+			memDC, 0, 0, DROPPED_ITEM_DRAW_W, DROPPED_ITEM_DRAW_H, EXT_TRANSPARENT);
+		SelectObject(memDC, oldB);
+		DeleteDC(memDC);
+	}
 }
 // drawBelow == false : 플레이어 발보다 위에 뿌리가 있는 나무  (플레이어 뒤 → 플레이어가 나무를 가림)
 static void DrawFishingTrees(HDC hDC, HBITMAP hBitmap_fishTree[3], int playerFootY, bool drawBelow) {
@@ -2246,37 +2256,43 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		g_hBitmap_inv_bag = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\inventory\\Inventory.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		// ----- [확장] 모든 아이템 아이콘 일괄 로드 (ItemType 인덱스 기준) -----
-		g_hBitmap_item[ITEM_HOE]              = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\icon_hoe.bmp"),              IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_item[ITEM_WATER]            = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\icon_water.bmp"),            IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_item[ITEM_ROD]              = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\fishing pole.bmp"),          IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_item[ITEM_AXE]              = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\axe_48x48.bmp"),             IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_item[ITEM_SEED_CARROT]      = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Carrot_Seeds_48x48.bmp"),    IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_item[ITEM_SEED_POTATO]      = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Potato_Seeds_48x48.bmp"),    IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_item[ITEM_SEED_RHUBARB]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Rhubarb_Seeds_48x48.bmp"),   IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_item[ITEM_SEED_STRAWBERRY]  = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Strawberry_Seeds_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_item[ITEM_FISH_CARP]        = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Carp_48x48.bmp"),            IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_item[ITEM_FISH_PERCH]       = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Perch_48x48.bmp"),           IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_item[ITEM_FISH_PUFFERFISH]  = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Pufferfish_48x48.bmp"),      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_item[ITEM_FISH_SQUID]       = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Squid_48x48.bmp"),           IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_item[ITEM_LOG]              = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\wood_48x48.bmp"),             IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_HOE] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\icon_hoe.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_WATER] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\icon_water.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_ROD] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\fishing pole.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_AXE] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\axe_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_SEED_CARROT] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Carrot_Seeds_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_SEED_POTATO] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Potato_Seeds_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_SEED_RHUBARB] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Rhubarb_Seeds_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_SEED_STRAWBERRY] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Strawberry_Seeds_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_FISH_CARP] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Carp_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_FISH_PERCH] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Perch_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_FISH_PUFFERFISH] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Pufferfish_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_FISH_SQUID] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Squid_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_LOG] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\wood_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		// ----- [작물 비트맵 로드] CropType × growStage 0~3 -----
-		g_hBitmap_crop[CROP_CARROT][0]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\carrot\\carrot_seed.bmp"),       IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_crop[CROP_CARROT][1]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\carrot\\carrot_grow1.bmp"),      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_crop[CROP_CARROT][2]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\carrot\\carrot_grow2.bmp"),      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_crop[CROP_CARROT][3]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\carrot\\carrot_ready.bmp"),      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_crop[CROP_POTATO][0]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\potato\\potato_seed.bmp"),       IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_crop[CROP_POTATO][1]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\potato\\potato_grow1.bmp"),      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_crop[CROP_POTATO][2]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\potato\\potato_grow2.bmp"),      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_crop[CROP_POTATO][3]     = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\potato\\potato_ready.bmp"),      IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_crop[CROP_RHUBARB][0]    = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\rhubarb\\rhubarb_seed.bmp"),     IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_crop[CROP_RHUBARB][1]    = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\rhubarb\\rhubarb_grow1.bmp"),    IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_crop[CROP_RHUBARB][2]    = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\rhubarb\\rhubarb_grow2.bmp"),    IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_crop[CROP_RHUBARB][3]    = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\rhubarb\\rhubarb_ready.bmp"),    IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_crop[CROP_STRAWBERRY][0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\strawberry\\straw_seed.bmp"),    IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_crop[CROP_STRAWBERRY][1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\strawberry\\straw_grow1.bmp"),   IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_crop[CROP_STRAWBERRY][2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\strawberry\\straw_grow2.bmp"),   IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_crop[CROP_STRAWBERRY][3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\strawberry\\straw_ready.bmp"),   IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_CARROT][0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\carrot\\carrot_seed.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_CARROT][1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\carrot\\carrot_grow1.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_CARROT][2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\carrot\\carrot_grow2.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_CARROT][3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\carrot\\carrot_ready.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_POTATO][0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\potato\\potato_seed.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_POTATO][1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\potato\\potato_grow1.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_POTATO][2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\potato\\potato_grow2.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_POTATO][3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\potato\\potato_ready.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_RHUBARB][0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\rhubarb\\rhubarb_seed.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_RHUBARB][1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\rhubarb\\rhubarb_grow1.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_RHUBARB][2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\rhubarb\\rhubarb_grow2.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_RHUBARB][3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\rhubarb\\rhubarb_ready.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_STRAWBERRY][0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\strawberry\\straw_seed.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_STRAWBERRY][1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\strawberry\\straw_grow1.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_STRAWBERRY][2] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\strawberry\\straw_grow2.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_crop[CROP_STRAWBERRY][3] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\crops\\strawberry\\straw_ready.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+
+		// 수확 아이템 아이콘
+		g_hBitmap_item[ITEM_CARROT] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Carrot_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_POTATO] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Potato_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_RHUBARB] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Rhubarb_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_STRAWBERRY] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Strawberry_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		InitTrees();
 		g_house.x = 705; g_house.y = 470;   // 절대 좌표 고정 (흙길 끝 빨간 영역)
@@ -2296,7 +2312,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		quickSlots[3] = ITEM_AXE;     g_quickCount[3] = 1;
 		// 가방 초기화 (전부 비움)
 		for (int kk = 0; kk < INV4_COUNT; kk++) {
-			bagSlots[kk]   = ITEM_NONE;
+			bagSlots[kk] = ITEM_NONE;
 			g_bagCount[kk] = 0;
 		}
 		// 4가지 씨앗을 0~3번 슬롯에 1개씩 지급
@@ -3004,48 +3020,53 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				}
 
 				// 바닥 드롭 아이템 (통나무/작물): 부유 애니 + 유예 + 플레이어 접촉 획득
-				if (g_droppedItem.active) {
-					g_droppedItem.floatTimer = (g_droppedItem.floatTimer + 1) % DROPPED_ITEM_FLOAT_PERIOD;
-					if (g_droppedItem.graceTick < g_itemGraceTicks) {
-						g_droppedItem.graceTick++;
+				for (size_t di = 0; di < g_droppedItems.size(); ) {
+					DroppedItem& item = g_droppedItems[di];
+					if (!item.active) { g_droppedItems.erase(g_droppedItems.begin() + di); continue; }
+					item.floatTimer = (item.floatTimer + 1) % DROPPED_ITEM_FLOAT_PERIOD;
+					if (item.graceTick < g_itemGraceTicks) {
+						item.graceTick++;
 					}
 					else {
-						int itemLeft = g_droppedItem.worldX - DROPPED_ITEM_DRAW_W / 2;
-						int itemTop  = g_droppedItem.worldY - DROPPED_ITEM_DRAW_H / 2;
+						int itemLeft = item.worldX - DROPPED_ITEM_DRAW_W / 2;
+						int itemTop = item.worldY - DROPPED_ITEM_DRAW_H / 2;
 						int playerFX = g_player.x + g_player.w / 4;
 						int playerFY = g_player.y + g_player.h * 3 / 4;
 						int playerFW = g_player.w / 2;
 						int playerFH = g_player.h / 4;
 						if (RectOverlap(itemLeft, itemTop, DROPPED_ITEM_DRAW_W, DROPPED_ITEM_DRAW_H,
 							playerFX, playerFY, playerFW, playerFH)) {
-							// TODO: 인벤토리 충분히 구현 시 아이템 인벤토리에 추가 구현
-							// ex) AddItemToBag(g_droppedItem.type);
-							g_droppedItem.active = false;
-							g_droppedItem.type   = ITEM_NONE;
+							AddItemToBag(item.type);
+							g_droppedItems.erase(g_droppedItems.begin() + di);
+							continue;
 						}
 					}
+					di++;
 				}
 
 				// 바닥 물고기: 부유 애니 + 유예 + 플레이어 접촉 획득
-				if (g_droppedFish.active) {
-					g_droppedFish.floatTimer = (g_droppedFish.floatTimer + 1) % DROPPED_FISH_FLOAT_PERIOD;
-					if (g_droppedFish.graceTick < g_fishGraceTicks) {
-						g_droppedFish.graceTick++;
+				for (size_t fi = 0; fi < g_droppedFishes.size(); ) {
+					DroppedFish& fish = g_droppedFishes[fi];
+					if (!fish.active) { g_droppedFishes.erase(g_droppedFishes.begin() + fi); continue; }
+					fish.floatTimer = (fish.floatTimer + 1) % DROPPED_FISH_FLOAT_PERIOD;
+					if (fish.graceTick < g_fishGraceTicks) {
+						fish.graceTick++;
 					}
 					else {
-						int fishLeft = g_droppedFish.worldX - FISH_ITEM_DRAW_W / 2;
-						int fishTop = g_droppedFish.worldY - FISH_ITEM_DRAW_H / 2;
+						int fishLeft = fish.worldX - FISH_ITEM_DRAW_W / 2;
+						int fishTop = fish.worldY - FISH_ITEM_DRAW_H / 2;
 						int playerFX = g_player.x + g_player.w / 4;
 						int playerFY = g_player.y + g_player.h * 3 / 4;
 						int playerFW = g_player.w / 2;
 						int playerFH = g_player.h / 4;
 						if (RectOverlap(fishLeft, fishTop, FISH_ITEM_DRAW_W, FISH_ITEM_DRAW_H,
 							playerFX, playerFY, playerFW, playerFH)) {
-							AddFishToInventory(g_droppedFish.type);
-							g_droppedFish.active = false;
-							g_droppedFish.type = FISH_ITEM_NONE;
+							AddFishToInventory(fish.type);
+							g_droppedFishes.erase(g_droppedFishes.begin() + fi);
+							continue;
 						}
 					}
+					fi++;
 				}
 				// 낚시터 씬일 때 낚시 가능 여부 갱신 (발 기준)
 				if (g_currentScene == SCENE_FISHING) {
@@ -3224,12 +3245,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				if (targetFish.movementType == FISH_MOVE_IRREGULAR)  droppedType = FISH_ITEM_BASS;
 
 				// 플레이어 발 바로 아래에 드롭
-				g_droppedFish.worldX = g_player.x + g_player.w / 2;
-				g_droppedFish.worldY = g_player.y + g_player.h;
-				g_droppedFish.type = droppedType;
-				g_droppedFish.active = true;
-				g_droppedFish.floatTimer = 0;
-				g_droppedFish.graceTick = 0; // 유예 시작
+				DroppedFish newFish;
+				newFish.worldX = g_player.x + g_player.w / 2;
+				newFish.worldY = g_player.y + g_player.h;
+				newFish.type = droppedType;
+				newFish.active = true;
+				newFish.floatTimer = 0;
+				newFish.graceTick = 0;
+				g_droppedFishes.push_back(newFish);
 
 				// [버그 수정] 인벤토리에 자동 적재 (스태킹 — 같은 물고기면 count++, 없으면 빈칸에)
 				ItemType invItem = ITEM_FISH_CARP;
