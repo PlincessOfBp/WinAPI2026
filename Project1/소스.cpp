@@ -1413,6 +1413,7 @@ static void TryChopTree(int mx, int my) {
 	}
 }
 
+// 낚시터 나무 벌목 시도
 // 낚시터 타일맵 
 // 타일 1개 = 32x32px (농장 맵과 동일, 월드 좌표 기준)
 // 맵 40x40타일 = 1280x1280px, 화면 800x800으로 BitBlt + cameraX/Y
@@ -1425,6 +1426,14 @@ static void TryChopTree(int mx, int my) {
 // 6: 낚시 가능 (오른쪽+아래, DIR_RIGHT & DIR_DOWN)
 // 7: 농장으로 이동 트리거
 // 8 - Tree1 9 - Tree2 10 - Tree3 나무들의 밑둥. 이동 불가능. 두 칸이 하나의 나무 밑둥.
+
+// 낚시터 나무 HP 관리 (타일 위치 row,col 기준 — 왼쪽 밑둥 칸 기준)
+struct FishingTreeState {
+	int row, col;     // 타일맵에서 나무 밑둥 왼쪽 칸 위치
+	int hp;           // 현재 HP
+	int shakeTimer;   // 흔들림 카운터
+};
+static std::vector<FishingTreeState> g_fishingTreeStates;
 #define FISHING_MAP_COLS 40
 #define FISHING_MAP_ROWS 40
 #define FISHING_TILE_SCREEN TILE_SIZE  // 낚시 맵 타일 크기 = 농장과 동일 (32px, 월드 좌표 기준)
@@ -1582,6 +1591,64 @@ static TreeInfo g_treeInfos[3] = {
 	{ 10, 2,  50,  62,  51,  62 }, // Tree3: 32*1.6=51,  39*1.6=62
 };
 
+// 낚시터 나무 벌목 시도 (g_treeInfos, g_fishingTileMap, g_fishingTreeStates 모두 정의 후에 위치)
+static void TryChopFishingTree(int mx, int my) {
+	if (g_currentTool != TOOL_AXE) return;
+	int worldX = mx + cameraX;
+	int worldY = my + cameraY;
+
+	int playerCX = g_player.x + g_player.w / 2;
+	int playerCY = g_player.y + g_player.h / 2;
+
+	for (size_t i = 0; i < g_fishingTreeStates.size(); i++) {
+		FishingTreeState& fs = g_fishingTreeStates[i];
+		if (fs.hp <= 0) continue;
+
+		int tileX = fs.col * FISHING_TILE_SCREEN;
+		int treeAreaW = FISHING_TILE_SCREEN * 2;
+		int tile = g_fishingTileMap[fs.row][fs.col];
+		int tIdx = tile - 8; // 0=Tree1, 1=Tree2, 2=Tree3
+		if (tIdx < 0 || tIdx > 2) continue;
+
+		int dstW = g_treeInfos[tIdx].dstW;
+		int dstH = g_treeInfos[tIdx].dstH;
+		int treeX = tileX + (treeAreaW - dstW) / 2;
+		int treeY = (fs.row + 1) * FISHING_TILE_SCREEN - dstH;
+
+		// 클릭이 나무 영역 안인지
+		if (worldX < treeX || worldX >= treeX + dstW) continue;
+		if (worldY < treeY || worldY >= treeY + dstH) continue;
+
+		// 플레이어 거리 제한
+		int treeCX = tileX + treeAreaW / 2;
+		int treeCY = (fs.row + 1) * FISHING_TILE_SCREEN;
+		int dx = playerCX - treeCX;
+		int dy = playerCY - treeCY;
+		if (dx * dx + dy * dy > 120 * 120) return;
+
+		// HP 감소 + 흔들림
+		fs.hp--;
+		fs.shakeTimer = TREE_SHAKE_TICKS;
+
+		if (fs.hp <= 0) {
+			// 타일맵 두 칸을 0으로 → 지나갈 수 있게
+			g_fishingTileMap[fs.row][fs.col] = 0;
+			g_fishingTileMap[fs.row][fs.col + 1] = 0;
+
+			// 통나무 드롭
+			DroppedItem newLog;
+			newLog.worldX = treeCX;
+			newLog.worldY = treeCY;
+			newLog.type = ITEM_LOG;
+			newLog.active = true;
+			newLog.floatTimer = 0;
+			newLog.graceTick = 0;
+			g_droppedItems.push_back(newLog);
+		}
+		return;
+	}
+}
+
 // ---------- 바닥에 떨어진 물고기 그리기 ----------
 static void DrawDroppedFish(HDC hDC) {
 	for (size_t i = 0; i < g_droppedFishes.size(); i++) {
@@ -1676,6 +1743,19 @@ static void DrawFishingTrees(HDC hDC, HBITMAP hBitmap_fishTree[3], int playerFoo
 				int treeAreaW = FISHING_TILE_SCREEN * 2;
 				int treeX = c * FISHING_TILE_SCREEN + (treeAreaW - g_treeInfos[t].dstW) / 2 - cameraX;
 				int treeY = treeFootY - g_treeInfos[t].dstH - cameraY;
+
+				// 흔들림 오프셋
+				int shakeOff = 0;
+				for (size_t si = 0; si < g_fishingTreeStates.size(); si++) {
+					if (g_fishingTreeStates[si].row == r && g_fishingTreeStates[si].col == c) {
+						if (g_fishingTreeStates[si].shakeTimer > 0) {
+							if (g_fishingTreeStates[si].shakeTimer % 2 == 1) shakeOff = TREE_SHAKE_OFFX;
+							else                                              shakeOff = -TREE_SHAKE_OFFX;
+						}
+						break;
+					}
+				}
+				treeX += shakeOff;
 
 				TransparentBlt(hDC, treeX, treeY, g_treeInfos[t].dstW, g_treeInfos[t].dstH,
 					memDC, 0, 0, g_treeInfos[t].srcW, g_treeInfos[t].srcH, RGB(255, 0, 255));
@@ -2536,6 +2616,26 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		hBitmap_test = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\inventory\\inventory_4.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		canFishing = false; // 낚시 가능 영역에 있을 때만 true로 설정됨
+
+		// 낚시터 나무 HP 초기화 (타일맵 순회해서 8/9/10 위치 등록)
+		g_fishingTreeStates.clear();
+		{
+			int r, c;
+			for (r = 0; r < FISHING_MAP_ROWS; r++) {
+				for (c = 0; c < FISHING_MAP_COLS - 1; c++) {
+					int tile = g_fishingTileMap[r][c];
+					if ((tile == 8 || tile == 9 || tile == 10) && g_fishingTileMap[r][c + 1] == tile) {
+						FishingTreeState fs;
+						fs.row = r;
+						fs.col = c;
+						fs.hp = TREE_HP_DEFAULT;
+						fs.shakeTimer = 0;
+						g_fishingTreeStates.push_back(fs);
+						c++; // 오른쪽 칸 건너뜀
+					}
+				}
+			}
+		}
 		isFishing = false;
 		floatingGreenBar = false;
 		greenBar.width = 10;
@@ -2671,6 +2771,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 
 			// 바닥 물고기 아이템 (플레이어 뒤, 나무 앞)
 			DrawDroppedFish(backDC);
+			// 바닥 드롭 아이템 (통나무 등)
+			DrawDroppedItem(backDC);
 
 			// 플레이어 (스프라이트 or 도형)
 			DrawPlayer(backDC);
@@ -3021,6 +3123,29 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			floatingGreenBar = true; // 낚시 게임 중 마우스 누르면 초록 게이지 올라감
 		}
 
+		if (g_currentScene == SCENE_FISHING && !g_isInventoryOpen && g_currentTool == TOOL_AXE
+			&& g_fishingPhase == FISHING_PHASE_NONE) {
+			int mx = LOWORD(lParam);
+			int my = HIWORD(lParam);
+			TryChopFishingTree(mx, my);
+			// 도끼 팔 애니메이션
+			if (!g_isFarmingAnim) {
+				g_isFarmingAnim = true;
+				g_farmArmTimer = 0;
+				g_farmArmSeqPos = 0;
+				g_farmSeqLen = 5;
+				if (g_player.dir == DIR_DOWN || g_player.dir == DIR_UP) {
+					g_farmSeqPtr = g_farmSeqAxeFront;
+					g_farmArmIdx = g_farmSeqAxeFront[0];
+				}
+				else {
+					g_farmSeqPtr = g_farmSeqAxeSide;
+					g_farmArmIdx = g_farmSeqAxeSide[0];
+				}
+			}
+			InvalidateRect(hWnd, NULL, FALSE);
+		}
+
 		if (canFishing && g_fishingPhase == FISHING_PHASE_NONE && g_currentTool == TOOL_POLE) {
 			// 낚시 시작: 캐스팅 단계로 진입
 			g_fishingPhase = FISHING_PHASE_CAST;
@@ -3150,6 +3275,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				for (size_t ti = 0; ti < g_trees.size(); ti++) {
 					if (g_trees[ti].shakeTimer > 0)
 						g_trees[ti].shakeTimer--;
+				}
+				// 낚시터 나무 흔들림 타이머 감소
+				for (size_t ti = 0; ti < g_fishingTreeStates.size(); ti++) {
+					if (g_fishingTreeStates[ti].shakeTimer > 0)
+						g_fishingTreeStates[ti].shakeTimer--;
 				}
 
 				// 바닥 드롭 아이템 (통나무/작물): 부유 애니 + 유예 + 플레이어 접촉 획득
