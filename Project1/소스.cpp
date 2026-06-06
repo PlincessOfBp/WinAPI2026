@@ -472,12 +472,35 @@ static ToolType g_currentTool = TOOL_NONE;
 static bool g_isInventoryOpen = false;
 
 // 플레이어 골드
-static int g_gold = 500; // 초기 골드 (외부에서 조정 가능)
+static int g_gold = 0; // 초기 골드 (외부에서 조정 가능)
 
 // 상점 씨앗 데이터
 #define SHOP_SEED_COUNT 4
 static const wchar_t* g_seedNames[SHOP_SEED_COUNT] = { L"감자 씨앗", L"당근 씨앗", L"대황 씨앗", L"딸기 씨앗" };
 static int             g_seedPrices[SHOP_SEED_COUNT] = { 25, 15, 50, 100 };
+
+// ---------- 아이템 판매가 (ItemType 인덱스 기준, 0이면 판매 불가) ----------
+// 도구(0~4)는 0으로 두어 판매 불가 처리. 외부에서 이 값만 바꾸면 가격 조정 가능.
+static int g_itemSellPrice[ITEM_COUNT] = {
+	0,    // TOOL_NONE
+	0,    // TOOL_HOE
+	0,    // TOOL_WATER
+	0,    // TOOL_POLE
+	0,    // TOOL_AXE
+	15,   // ITEM_SEED_CARROT    (씨앗은 구매가와 동일)
+	25,   // ITEM_SEED_POTATO
+	50,  // ITEM_SEED_RHUBARB
+	100,  // ITEM_SEED_STRAWBERRY
+	30,   // ITEM_FISH_CARP      잉어
+	55,   // ITEM_FISH_PERCH     농어
+	200,  // ITEM_FISH_PUFFERFISH 복어
+	80,   // ITEM_FISH_SQUID     오징어
+	30,   // ITEM_LOG            나무 (씨앗 초기자금용 — 당근씨앗 2개 살 수 있는 가격)
+	35,   // ITEM_CARROT         당근
+	80,   // ITEM_POTATO         감자
+	220,  // ITEM_RHUBARB        대황
+	120,  // ITEM_STRAWBERRY     딸기
+};
 // 씨앗 아이템 화면 위치 (WM_PAINT의 TransparentBlt 좌표와 동일)
 static int g_seedItemX[SHOP_SEED_COUNT] = { 100 + 25, 100 + 95, 100 + 95 + 70, 100 + 90 + 140 };
 static int g_seedItemY[SHOP_SEED_COUNT] = { 200 + 25, 200 + 25, 200 + 25,      200 + 25 };
@@ -486,6 +509,8 @@ static int g_seedItemY[SHOP_SEED_COUNT] = { 200 + 25, 200 + 25, 200 + 25,      2
 
 // 현재 호버 중인 씨앗 인덱스 (-1이면 없음)
 static int g_shopHoverIdx = -1;
+// 상점에서 인벤토리 호버 중인 슬롯 인덱스 (-1이면 없음, bag 기준)
+static int g_shopInvHoverSlot = -1;
 
 // ---------- 인벤토리 슬롯 데이터 ----------
 // 1줄 퀵슬롯 4칸: [0]=HOE 고정 [1]=WATER 고정 [2]=POLE 고정 [3]=장착(빈칸 가능)
@@ -566,6 +591,12 @@ static int      g_dragMouseX = 0, g_dragMouseY = 0;  // 현재 마우스 위치 
 #define INV4_BG_X             (CLIENT_W / 2 - INV4_BG_W / 2)
 #define INV4_BG_Y             (CLIENT_H / 2 - INV4_BG_H / 2)
 #define INV4_CELL_SIZE        48    // 한 슬롯 아이콘 크기 (드래그/충돌 판정 박스)
+
+// 상점 씬 전용 인벤토리 위치 (기존 hBitmap_test 위치와 동일: 100,400 / 300x300)
+#define SHOP_INV_BG_X         100
+#define SHOP_INV_BG_Y         400
+#define SHOP_INV_BG_W         300
+#define SHOP_INV_BG_H         300
 
 // ===== [슬롯 위치 미세 조정용 상수 — 이 값들만 바꾸면 위치 변경됨] =====
 // 4x4 인벤토리 (사용자 실측: 첫 슬롯 좌상단 20,20 / 우상단 75,20 / 두번째 슬롯 88,20)
@@ -1008,6 +1039,29 @@ static void GetInv4CellRect(int i, int* outX, int* outY) {
 }
 
 
+// 상점 씬 전용: 인벤토리 i번 셀의 화면 좌표 (SHOP_INV_BG_X/Y 기준)
+static void GetShopInvCellRect(int i, int* outX, int* outY) {
+	int row = i / 4;
+	int col = i % 4;
+	int slotX = SHOP_INV_BG_X + BAG_START_X_OFFSET + col * BAG_SLOT_STEP;
+	int slotY = SHOP_INV_BG_Y + BAG_START_Y_OFFSET + row * BAG_SLOT_STEP;
+	int cx = (BAG_SLOT_BOX_SIZE - QUICKSLOT_ICON_SIZE) / 2;
+	int cy = (BAG_SLOT_BOX_SIZE - QUICKSLOT_ICON_SIZE) / 2;
+	if (outX) *outX = slotX + cx;
+	if (outY) *outY = slotY + cy;
+}
+
+// 상점 씬 전용: 마우스가 어느 인벤토리 슬롯 위인지 (-1이면 없음)
+static int HitShopInvCell(int mx, int my) {
+	for (int i = 0; i < INV4_COUNT; i++) {
+		int ix, iy;
+		GetShopInvCellRect(i, &ix, &iy);
+		if (mx >= ix && mx < ix + QUICKSLOT_ICON_SIZE &&
+			my >= iy && my < iy + QUICKSLOT_ICON_SIZE) return i;
+	}
+	return -1;
+}
+
 void DrawQuickSlot(HDC hDC) {
 	HDC memDC = CreateCompatibleDC(hDC);
 
@@ -1073,6 +1127,7 @@ void DrawQuickSlot(HDC hDC) {
 // ---------- 4x4 인벤토리 (비트맵만, 열렸을 때만) ----------
 void DrawInventoryPanel(HDC hDC) {
 	if (!g_isInventoryOpen) return;
+	if (g_currentScene == SCENE_SHOP) return; // 상점에서는 별도 함수로 그림
 	HDC memDC = CreateCompatibleDC(hDC);
 
 	// 배경 패널 (inventory_4.bmp 300x300)
@@ -1116,6 +1171,52 @@ void DrawInventoryPanel(HDC hDC) {
 				memDC, 0, 0, QUICKSLOT_ICON_SIZE, QUICKSLOT_ICON_SIZE,
 				EXT_TRANSPARENT);
 			SelectObject(memDC, oldB);
+		}
+	}
+
+	DeleteDC(memDC);
+}
+
+// ---------- 상점 전용 인벤토리 패널 (항상 표시, SHOP_INV_BG 위치에 고정) ----------
+void DrawShopInventoryPanel(HDC hDC) {
+	HDC memDC = CreateCompatibleDC(hDC);
+
+	// 배경 패널 (일반 인벤토리와 동일한 비트맵, 상점 위치에)
+	if (g_hBitmap_inv_main != NULL) {
+		HBITMAP oldB = (HBITMAP)SelectObject(memDC, g_hBitmap_inv_main);
+		TransparentBlt(hDC, SHOP_INV_BG_X, SHOP_INV_BG_Y, SHOP_INV_BG_W, SHOP_INV_BG_H,
+			memDC, 0, 0, INV4_BG_W, INV4_BG_H, EXT_TRANSPARENT);
+		SelectObject(memDC, oldB);
+	}
+
+	// 16칸 아이템
+	for (int i = 0; i < INV4_COUNT; i++) {
+		int ix, iy;
+		GetShopInvCellRect(i, &ix, &iy);
+		HBITMAP src = GetToolIconBitmap(bagSlots[i]);
+		if (src != NULL) {
+			HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
+			TransparentBlt(hDC, ix, iy, QUICKSLOT_ICON_SIZE, QUICKSLOT_ICON_SIZE,
+				memDC, 0, 0, QUICKSLOT_ICON_SIZE, QUICKSLOT_ICON_SIZE, EXT_TRANSPARENT);
+			SelectObject(memDC, oldB);
+		}
+		// 개수 표시
+		if (src != NULL && g_bagCount[i] > 1) {
+			SetBkMode(hDC, TRANSPARENT);
+			SetTextColor(hDC, RGB(255, 240, 80));
+			wchar_t buf[16];
+			wsprintfW(buf, L"%d", g_bagCount[i]);
+			int len = (int)wcslen(buf);
+			int tx = ix + QUICKSLOT_ICON_SIZE - 4 - len * 8;
+			int ty = iy + 2;
+			TextOut(hDC, tx, ty, buf, len);
+		}
+		// 호버 슬롯 하이라이트 (노란 테두리)
+		if (g_shopInvHoverSlot == i && bagSlots[i] != ITEM_NONE) {
+			HBRUSH hlBrush = CreateSolidBrush(RGB(255, 220, 0));
+			RECT hlRect = { ix - 2, iy - 2, ix + QUICKSLOT_ICON_SIZE + 2, iy + QUICKSLOT_ICON_SIZE + 2 };
+			FrameRect(hDC, &hlRect, hlBrush);
+			DeleteObject(hlBrush);
 		}
 	}
 
@@ -2599,7 +2700,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		case SCENE_SHOP:
 		{
 			// 상점 씬: 임시 회색 배경 + 안내 텍스트
-			HBRUSH shopBg = CreateSolidBrush(RGB(120, 120, 120));
+			HBRUSH shopBg = CreateSolidBrush(RGB(208, 176, 138));
 			RECT r = { 0, 0, CLIENT_W, CLIENT_H };
 			FillRect(backDC, &r, shopBg);
 			DeleteObject(shopBg);
@@ -2659,31 +2760,45 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			SetTextColor(backDC, RGB(0, 0, 0));
 
 			if (g_shopHoverIdx >= 0) {
-				// 호버 중인 씨앗 이름 표시
+				// 씨앗 아이템 호버: 이름 + 구매 안내
 				TextOut(backDC, 560, 210, g_seedNames[g_shopHoverIdx], (int)wcslen(g_seedNames[g_shopHoverIdx]));
 				SelectObject(backDC, hFontSmall);
-
-				// 가격 표시
 				wchar_t priceStr[64];
 				wsprintfW(priceStr, L"가격: %d골드", g_seedPrices[g_shopHoverIdx]);
 				TextOut(backDC, 560, 280, priceStr, (int)wcslen(priceStr));
-
-				// 구매 가능 여부 판단 (골드 우선)
 				if (g_gold < g_seedPrices[g_shopHoverIdx]) {
 					SetTextColor(backDC, RGB(200, 0, 0));
 					TextOut(backDC, 560, 310, L"돈이 부족합니다.", 8);
 					SetTextColor(backDC, RGB(0, 0, 0));
 				}
 				else {
-					// TODO: 인벤토리 충분히 구현 시 아래 주석 해제 후 꽉 찬 경우 처리
-					// if (IsInventoryFull()) {
-					//     SetTextColor(backDC, RGB(200, 0, 0));
-					//     TextOut(backDC, 560, 310, L"인벤토리가 꽉 찼습니다.", 11);
-					//     SetTextColor(backDC, RGB(0, 0, 0));
-					// }
-					// else {
-					TextOut(backDC, 560, 310, L"좌클릭 시 1개 구매", 11);
-					// }
+					TextOut(backDC, 560, 310, L"좌클릭으로 1개 구매.", 11);
+				}
+			}
+			else if (g_shopInvHoverSlot >= 0 && bagSlots[g_shopInvHoverSlot] != ITEM_NONE) {
+				// 인벤토리 아이템 호버
+				ItemType hovItem = (ItemType)bagSlots[g_shopInvHoverSlot];
+				// 아이템 이름 테이블
+				static const wchar_t* itemNames[ITEM_COUNT] = {
+					L"없음", L"호미", L"물뿌리개", L"낚싯대", L"도끼",
+					L"당근 씨앗", L"감자 씨앗", L"대황 씨앗", L"딸기 씨앗",
+					L"잉어", L"농어", L"복어", L"오징어",
+					L"나무", L"당근", L"감자", L"대황", L"딸기"
+				};
+				const wchar_t* itemName = (hovItem >= 0 && hovItem < ITEM_COUNT) ? itemNames[hovItem] : L"알 수 없음";
+				SelectObject(backDC, hFontBig);
+				TextOut(backDC, 560, 210, itemName, (int)wcslen(itemName));
+				SelectObject(backDC, hFontSmall);
+				bool isTool = (hovItem >= TOOL_HOE && hovItem <= TOOL_AXE);
+				if (isTool) {
+					TextOut(backDC, 560, 280, L"판매할 수 없습니다.", 10);
+				}
+				else {
+					int sellPrice = (hovItem >= 0 && hovItem < ITEM_COUNT) ? g_itemSellPrice[hovItem] : 0;
+					wchar_t sellStr[64];
+					wsprintfW(sellStr, L"판매가: %d골드", sellPrice);
+					TextOut(backDC, 560, 280, sellStr, (int)wcslen(sellStr));
+					TextOut(backDC, 560, 310, L"좌클릭으로 1개 판매.", 11);
 				}
 			}
 			else {
@@ -2714,13 +2829,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			TransparentBlt(backDC, 100 + 90 + 140, 200 + 25, 48, 48,
 				hShopDC, 0, 0, 48, 48, RGB(255, 0, 255));
 
-			// 플레이어의 인벤토리가 있을 자리. test로 위치만 따둔 상태. 
-			SelectObject(hShopDC, hBitmap_test);
-			TransparentBlt(backDC, 100, 400, 300, 300,
-				hShopDC, 0, 0, 300, 300, RGB(255, 0, 255));
-
 			SelectObject(hShopDC, hOldShop);
 			DeleteDC(hShopDC);
+
+			// 플레이어 인벤토리 (상점 고정 위치에 항상 표시)
+			DrawShopInventoryPanel(backDC);
 
 			break;
 		}
@@ -2760,24 +2873,37 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		if (g_currentScene == SCENE_SHOP) {
 			int mx = LOWORD(lParam);
 			int my = HIWORD(lParam);
+
+			// 씨앗 구매 클릭
 			int i;
 			for (i = 0; i < SHOP_SEED_COUNT; i++) {
 				if (mx >= g_seedItemX[i] && mx < g_seedItemX[i] + SHOP_SEED_W &&
 					my >= g_seedItemY[i] && my < g_seedItemY[i] + SHOP_SEED_H) {
-					// 골드 우선 체크
-					if (g_gold < g_seedPrices[i]) {
-						// 돈 부족 — 설명란에 이미 표시되므로 추가 처리 없음
-						break;
-					}
-					// TODO: 인벤토리 충분히 구현 시 아래 조건 추가
-					// if (IsInventoryFull()) { break; }
-
-					// 구매 처리
+					if (g_gold < g_seedPrices[i]) break;
 					g_gold -= g_seedPrices[i];
-					// TODO: 인벤토리 충분히 구현 시 아이템 인벤토리에 추가 구현
-					// ex) AddSeedToInventory(i);
+					// 씨앗 종류: 0=감자씨앗 1=당근씨앗 2=대황씨앗 3=딸기씨앗 (g_seedNames 순)
+					static const ItemType seedItemMap[SHOP_SEED_COUNT] = {
+						ITEM_SEED_POTATO, ITEM_SEED_CARROT, ITEM_SEED_RHUBARB, ITEM_SEED_STRAWBERRY
+					};
+					AddItemToBag(seedItemMap[i]);
 					InvalidateRect(hWnd, NULL, FALSE);
 					break;
+				}
+			}
+
+			// 인벤토리 슬롯 판매 클릭
+			int cell = HitShopInvCell(mx, my);
+			if (cell >= 0 && bagSlots[cell] != ITEM_NONE) {
+				ItemType sellItem = (ItemType)bagSlots[cell];
+				bool isTool = (sellItem >= TOOL_HOE && sellItem <= TOOL_AXE);
+				if (!isTool && sellItem < ITEM_COUNT && g_itemSellPrice[sellItem] > 0) {
+					g_gold += g_itemSellPrice[sellItem];
+					g_bagCount[cell]--;
+					if (g_bagCount[cell] <= 0) {
+						bagSlots[cell] = ITEM_NONE;
+						g_bagCount[cell] = 0;
+					}
+					InvalidateRect(hWnd, NULL, FALSE);
 				}
 			}
 			break;
@@ -2790,8 +2916,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			int mx = LOWORD(lParam);
 			int my = HIWORD(lParam);
 
-			// 1) 가방 아이콘 클릭 → 인벤토리 토글 (모든 씬에서)
-			if (IsClickInBag(mx, my)) {
+			// 1) 가방 아이콘 클릭 → 인벤토리 토글 (상점 제외 모든 씬에서)
+			if (IsClickInBag(mx, my) && g_currentScene != SCENE_SHOP) {
 				g_isInventoryOpen = !g_isInventoryOpen;
 				g_selectedInv4 = -1;
 				InvalidateRect(hWnd, NULL, FALSE);
@@ -2972,7 +3098,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			int mx = LOWORD(lParam);
 			int my = HIWORD(lParam);
 			int prevHover = g_shopHoverIdx;
+			int prevInvHover = g_shopInvHoverSlot;
 			g_shopHoverIdx = -1;
+			g_shopInvHoverSlot = -1;
+			// 씨앗 호버
 			int i;
 			for (i = 0; i < SHOP_SEED_COUNT; i++) {
 				if (mx >= g_seedItemX[i] && mx < g_seedItemX[i] + SHOP_SEED_W &&
@@ -2981,7 +3110,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 					break;
 				}
 			}
-			if (g_shopHoverIdx != prevHover)
+			// 인벤토리 슬롯 호버
+			if (g_shopHoverIdx < 0) {
+				g_shopInvHoverSlot = HitShopInvCell(mx, my);
+			}
+			if (g_shopHoverIdx != prevHover || g_shopInvHoverSlot != prevInvHover)
 				InvalidateRect(hWnd, NULL, FALSE);
 		}
 		break;
@@ -3293,7 +3426,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		case '2': SelectQuickSlot(1); break;
 		case '3': SelectQuickSlot(2); break;
 		case '4': SelectQuickSlot(3); break;
-		case 'E': g_isInventoryOpen = !g_isInventoryOpen; g_selectedInv4 = -1; break;
+		case 'E':
+			if (g_currentScene != SCENE_SHOP)  // 상점에서는 인벤토리 토글 불가
+				g_isInventoryOpen = !g_isInventoryOpen;
+			g_selectedInv4 = -1;
+			break;
 		case 'Q':
 			// 상점 씬에 있을 때 Q 누르면 집 밖(농장)으로 나가기
 			if (g_currentScene == SCENE_SHOP) {
