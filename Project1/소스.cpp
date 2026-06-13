@@ -23,6 +23,53 @@ static GameScene g_currentScene = SCENE_FARM;
 #define CLIENT_W 800
 #define CLIENT_H 800
 
+// 실제 창(클라이언트) 크기 — WM_SIZE에서 갱신
+static int g_winW = CLIENT_W;
+static int g_winH = CLIENT_H;
+// 게임 화면(백버퍼)의 "논리" 크기 — 창 비율에 맞춰 확장됨 (가로/세로로 더 보임)
+static int g_logicalW = CLIENT_W;
+static int g_logicalH = CLIENT_H;
+// 백버퍼를 창에 그릴 때의 실제 출력 영역 (항상 창 전체)
+static int g_viewX = 0;
+static int g_viewY = 0;
+static int g_viewW = CLIENT_W;
+static int g_viewH = CLIENT_H;
+
+// 창 크기에 맞춰 g_logicalW/H, g_viewX/Y/W/H 갱신
+// - 짧은 쪽 기준 scale = min(winW,winH)/CLIENT_W (기존 800 기준 확대/축소 비율)
+// - 논리 화면 크기 = 창 크기 / scale  → 창이 한쪽으로 더 길어지면 그만큼 맵이 더 보임
+// - 출력은 항상 창 전체를 채움 (StretchBlt로 logical → window)
+static void UpdateViewport() {
+	if (g_winW <= 0 || g_winH <= 0) return;
+
+	int side = (g_winW < g_winH) ? g_winW : g_winH;
+	double scale = (double)side / (double)CLIENT_W;
+	if (scale <= 0.0) scale = 1.0;
+
+	g_logicalW = (int)(g_winW / scale + 0.5);
+	g_logicalH = (int)(g_winH / scale + 0.5);
+	if (g_logicalW < 1) g_logicalW = 1;
+	if (g_logicalH < 1) g_logicalH = 1;
+	// 맵(1280x1280)보다 더 넓어지면 그 이상은 보여줄 콘텐츠가 없으므로 제한
+	if (g_logicalW > 1280) g_logicalW = 1280;
+	if (g_logicalH > 1280) g_logicalH = 1280;
+
+	g_viewX = 0;
+	g_viewY = 0;
+	g_viewW = g_winW;
+	g_viewH = g_winH;
+}
+
+// 창 좌표 → 게임 좌표 변환
+static int ToGameX(int winX) {
+	if (g_viewW <= 0) return winX;
+	return (winX - g_viewX) * g_logicalW / g_viewW;
+}
+static int ToGameY(int winY) {
+	if (g_viewH <= 0) return winY;
+	return (winY - g_viewY) * g_logicalH / g_viewH;
+}
+
 // 플레이어 바라보는 방향
 enum PlayerDir {
 	DIR_DOWN = 0,
@@ -173,8 +220,8 @@ static void AddFishToInventory(FishItemType type) {
 #define CAMERA_DEADZONE_MARGIN  120
 
 // 카메라 clamp 한계 (맵 1280, 화면 800 → 0 ~ 480)
-#define CAMERA_MAX_X      (MAP_PIXEL_W - CLIENT_W)   // 480
-#define CAMERA_MAX_Y      (MAP_PIXEL_H - CLIENT_H)   // 480
+#define CAMERA_MAX_X      (MAP_PIXEL_W - g_logicalW)   // 480
+#define CAMERA_MAX_Y      (MAP_PIXEL_H - g_logicalH)   // 480
 
 // ---------- 카메라 ----------
 static int cameraX = 0;
@@ -211,16 +258,16 @@ void DrawNightOverlay(HDC hDC) {
 	int alpha = CalcNightAlpha();
 	if (alpha <= 0) return;
 	HDC memDC = CreateCompatibleDC(hDC);
-	HBITMAP bmp = CreateCompatibleBitmap(hDC, CLIENT_W, CLIENT_H);
+	HBITMAP bmp = CreateCompatibleBitmap(hDC, g_logicalW, g_logicalH);
 	HBITMAP oldBmp = (HBITMAP)SelectObject(memDC, bmp);
 	// 약간 푸른 빛의 검은색이 자연스러운 밤 느낌
 	HBRUSH br = CreateSolidBrush(RGB(5, 10, 40));
-	RECT r = { 0, 0, CLIENT_W, CLIENT_H };
+	RECT r = { 0, 0, g_logicalW, g_logicalH };
 	FillRect(memDC, &r, br);
 	DeleteObject(br);
 	BLENDFUNCTION bf = { AC_SRC_OVER, 0, (BYTE)alpha, 0 };
-	AlphaBlend(hDC, 0, 0, CLIENT_W, CLIENT_H,
-		memDC, 0, 0, CLIENT_W, CLIENT_H, bf);
+	AlphaBlend(hDC, 0, 0, g_logicalW, g_logicalH,
+		memDC, 0, 0, g_logicalW, g_logicalH, bf);
 	SelectObject(memDC, oldBmp);
 	DeleteObject(bmp);
 	DeleteDC(memDC);
@@ -574,8 +621,8 @@ static int      g_dragMouseX = 0, g_dragMouseY = 0;  // 현재 마우스 위치 
 // 1줄 퀵슬롯: inventory_1.bmp 300x96, 화면 하단 중앙
 #define QUICKSLOT_BG_W        300
 #define QUICKSLOT_BG_H         96
-#define QUICKSLOT_BG_X        (CLIENT_W / 2 - (QUICKSLOT_BG_W + 64) / 2)   // 가방 옆에 붙여 그리므로 합쳐 중앙
-#define QUICKSLOT_BG_Y        (CLIENT_H - QUICKSLOT_BG_H - 20)
+#define QUICKSLOT_BG_X        (g_logicalW / 2 - (QUICKSLOT_BG_W + 64) / 2)   // 가방 옆에 붙여 그리므로 합쳐 중앙
+#define QUICKSLOT_BG_Y        (g_logicalH - QUICKSLOT_BG_H - 20)
 #define QUICKSLOT_ICON_SIZE    48
 #define QUICKSLOT_PAD          12
 
@@ -588,8 +635,8 @@ static int      g_dragMouseX = 0, g_dragMouseY = 0;  // 현재 마우스 위치 
 // 4x4 인벤토리: inventory_4.bmp 300x300, 화면 정중앙
 #define INV4_BG_W             300
 #define INV4_BG_H             300
-#define INV4_BG_X             (CLIENT_W / 2 - INV4_BG_W / 2)
-#define INV4_BG_Y             (CLIENT_H / 2 - INV4_BG_H / 2)
+#define INV4_BG_X             (g_logicalW / 2 - INV4_BG_W / 2)
+#define INV4_BG_Y             (g_logicalH / 2 - INV4_BG_H / 2)
 #define INV4_CELL_SIZE        48    // 한 슬롯 아이콘 크기 (드래그/충돌 판정 박스)
 
 // 상점 씬 전용 인벤토리 위치 (기존 hBitmap_test 위치와 동일: 100,400 / 300x300)
@@ -650,8 +697,8 @@ static int TileChebyshevDist(int ax, int ay, int bx, int by) {
 // cameraY = player.worldY - (화면높이/2) + (플레이어세로/2)
 // 그리고 맵 경계(0 ~ 480)로 clamp.
 void UpdateCamera() {
-	cameraX = g_player.x - (CLIENT_W / 2) + (g_player.w / 2);
-	cameraY = g_player.y - (CLIENT_H / 2) + (g_player.h / 2);
+	cameraX = g_player.x - (g_logicalW / 2) + (g_player.w / 2);
+	cameraY = g_player.y - (g_logicalH / 2) + (g_player.h / 2);
 
 	// Clamp 0 ~ 480 (맵 1280 - 화면 800)
 	if (cameraX < 0) cameraX = 0;
@@ -752,8 +799,8 @@ void DrawFarmTrees(HDC hDC) {
 		}
 		int sx = t.x - cameraX + shakeOff;
 		int sy = t.y - cameraY;
-		if (sx + t.w < 0 || sx > CLIENT_W) continue;
-		if (sy + t.h < 0 || sy > CLIENT_H) continue;
+		if (sx + t.w < 0 || sx > g_logicalW) continue;
+		if (sy + t.h < 0 || sy > g_logicalH) continue;
 
 		HBITMAP src = NULL;
 		if (t.kind == TREE_KIND_1)      src = g_hBitmap_tree1;
@@ -835,8 +882,8 @@ void DrawFarmTiles(HDC hdc) {
 			int screenY = worldTileY - cameraY;
 
 			// 화면 컬링
-			if (screenX + 32 < 0 || screenX > CLIENT_W) continue;
-			if (screenY + 32 < 0 || screenY > CLIENT_H) continue;
+			if (screenX + 32 < 0 || screenX > g_logicalW) continue;
+			if (screenY + 32 < 0 || screenY > g_logicalH) continue;
 
 			// 32x32 크기 고정으로 그림 (작물보다 먼저)
 			SelectObject(hdcTileMem, hTileBmp);
@@ -878,8 +925,8 @@ void DrawCrops(HDC hdc) {
 			int screenY = worldTileY - cameraY;
 
 			// 화면 컬링
-			if (screenX + 32 < 0 || screenX > CLIENT_W) continue;
-			if (screenY + 32 < 0 || screenY > CLIENT_H) continue;
+			if (screenX + 32 < 0 || screenX > g_logicalW) continue;
+			if (screenY + 32 < 0 || screenY > g_logicalH) continue;
 
 			// 3) 흙 타일(32x32) 영역 안에 딱 맞게 출력 — 원본은 cropW x cropH, 화면은 32x32
 			//    (dest 사이즈와 src 사이즈가 달라서 TransparentBlt 가 자동 축소함)
@@ -1722,7 +1769,7 @@ static void DrawFishingTrees(HDC hDC, HBITMAP hBitmap_fishTree[3], int playerFoo
 
 		// 화면 밖 행 컬링
 		int screenFootY = treeFootY - cameraY;
-		if (screenFootY < -200 || screenFootY > CLIENT_H + 200) continue;
+		if (screenFootY < -200 || screenFootY > g_logicalH + 200) continue;
 
 		for (c = 0; c < FISHING_MAP_COLS - 1; c++) {
 			int tile = g_fishingTileMap[r][c];
@@ -2541,7 +2588,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		g_player.farming_arm[23] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\사람\\farmer_물뿌리개_옆면2_20x27.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		//씬/플레이어 초기화
-		g_currentScene = SCENE_SHOP;
+		g_currentScene = SCENE_FARM;
 		g_player.x = 700; g_player.y = 700;  // 절벽 RECT(0,0~600,450) 밖에서 시작
 		g_player.w = PLAYER_DISPLAY_W;
 		g_player.h = PLAYER_DISPLAY_H;
@@ -2666,7 +2713,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 
 
 		HDC backDC = CreateCompatibleDC(hDC);
-		HBITMAP backBmp = CreateCompatibleBitmap(hDC, CLIENT_W, CLIENT_H);
+		HBITMAP backBmp = CreateCompatibleBitmap(hDC, g_logicalW, g_logicalH);
 		HBITMAP oldBackBmp = (HBITMAP)SelectObject(backDC, backBmp);
 
 		// 낚시 비트맵 select용
@@ -2683,7 +2730,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				HDC hFarmDC = CreateCompatibleDC(backDC);
 				HBITMAP hOldFarm = (HBITMAP)SelectObject(hFarmDC, hBitmap_farm);
 				SetStretchBltMode(backDC, HALFTONE);
-				StretchBlt(backDC, 0, 0, CLIENT_W, CLIENT_H,
+				StretchBlt(backDC, 0, 0, g_logicalW, g_logicalH,
 					hFarmDC, 0, 0, FARM_BG_SRC_W, FARM_BG_SRC_H,
 					SRCCOPY);
 				SelectObject(hFarmDC, hOldFarm);
@@ -2691,7 +2738,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			}
 			else {
 				HBRUSH bg = CreateSolidBrush(RGB(150, 200, 130));
-				RECT r = { 0, 0, CLIENT_W, CLIENT_H };
+				RECT r = { 0, 0, g_logicalW, g_logicalH };
 				FillRect(backDC, &r, bg);
 				DeleteObject(bg);
 			}
@@ -2702,7 +2749,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			if (g_hBitmap_map != NULL) {
 				HDC hMapDC = CreateCompatibleDC(backDC);
 				HBITMAP hOldMap = (HBITMAP)SelectObject(hMapDC, g_hBitmap_map);
-				BitBlt(backDC, 0, 0, CLIENT_W, CLIENT_H,
+				BitBlt(backDC, 0, 0, g_logicalW, g_logicalH,
 					hMapDC, cameraX, cameraY, SRCCOPY);
 				SelectObject(hMapDC, hOldMap);
 				DeleteDC(hMapDC);
@@ -2745,14 +2792,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			// fishingmap_1280x1280.bmp 가 1280x1280 원본이므로 그대로 cameraX/Y 만큼 잘라 화면에 표시
 			if (!hBitmap_fishingGround) {
 				HBRUSH seaBrush = CreateSolidBrush(RGB(60, 110, 170));
-				RECT seaRect = { 0, 0, CLIENT_W, CLIENT_H };
+				RECT seaRect = { 0, 0, g_logicalW, g_logicalH };
 				FillRect(backDC, &seaRect, seaBrush);
 				DeleteObject(seaBrush);
 			}
 			else {
 				HDC hFishingDC = CreateCompatibleDC(backDC);
 				HBITMAP hOldFishing = (HBITMAP)SelectObject(hFishingDC, hBitmap_fishingGround);
-				BitBlt(backDC, 0, 0, CLIENT_W, CLIENT_H,
+				BitBlt(backDC, 0, 0, g_logicalW, g_logicalH,
 					hFishingDC, cameraX, cameraY,
 					SRCCOPY);
 				SelectObject(hFishingDC, hOldFishing);
@@ -2803,7 +2850,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		{
 			// 상점 씬: 임시 회색 배경 + 안내 텍스트
 			HBRUSH shopBg = CreateSolidBrush(RGB(208, 176, 138));
-			RECT r = { 0, 0, CLIENT_W, CLIENT_H };
+			RECT r = { 0, 0, g_logicalW, g_logicalH };
 			FillRect(backDC, &r, shopBg);
 			DeleteObject(shopBg);
 
@@ -2955,7 +3002,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		DrawDraggedItem(backDC);
 
 		// 화면으로 한 번에 복사
-		BitBlt(hDC, 0, 0, CLIENT_W, CLIENT_H, backDC, 0, 0, SRCCOPY);
+		SetStretchBltMode(hDC, HALFTONE);
+		StretchBlt(hDC, g_viewX, g_viewY, g_viewW, g_viewH,
+			backDC, 0, 0, g_logicalW, g_logicalH, SRCCOPY);
 
 		// 정리
 		DeleteDC(hMemDC);
@@ -2973,8 +3022,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	case WM_LBUTTONDOWN:
 	{
 		if (g_currentScene == SCENE_SHOP) {
-			int mx = LOWORD(lParam);
-			int my = HIWORD(lParam);
+			int mx = ToGameX(LOWORD(lParam));
+			int my = ToGameY(HIWORD(lParam));
 
 			// 씨앗 구매 클릭
 			int i;
@@ -3015,8 +3064,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		// [전역 인벤토리 마우스 처리] — 씬과 무관하게 모든 맵에서 작동
 		// ============================================================
 		{
-			int mx = LOWORD(lParam);
-			int my = HIWORD(lParam);
+			int mx = ToGameX(LOWORD(lParam));
+			int my = ToGameY(HIWORD(lParam));
 
 			// 1) 가방 아이콘 클릭 → 인벤토리 토글 (상점 제외 모든 씬에서)
 			if (IsClickInBag(mx, my) && g_currentScene != SCENE_SHOP) {
@@ -3068,8 +3117,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		// [SCENE_FARM 전용 맵 상호작용] — 호미/물/씨앗/도끼/수확
 		// ============================================================
 		if (g_currentScene == SCENE_FARM) {
-			int mx = LOWORD(lParam);
-			int my = HIWORD(lParam);
+			int mx = ToGameX(LOWORD(lParam));
+			int my = ToGameY(HIWORD(lParam));
 
 			// 5) 맵 클릭 처리 (인벤토리 닫혀있을 때만)
 			if (!g_isInventoryOpen) {
@@ -3125,8 +3174,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 
 		if (g_currentScene == SCENE_FISHING && !g_isInventoryOpen && g_currentTool == TOOL_AXE
 			&& g_fishingPhase == FISHING_PHASE_NONE) {
-			int mx = LOWORD(lParam);
-			int my = HIWORD(lParam);
+			int mx = ToGameX(LOWORD(lParam));
+			int my = ToGameY(HIWORD(lParam));
 			TryChopFishingTree(mx, my);
 			// 도끼 팔 애니메이션
 			if (!g_isFarmingAnim) {
@@ -3187,8 +3236,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 
 		// 드래그 종료: 놓은 위치 검사 후 swap 또는 취소
 		if (g_draggedSlotIndex >= 0) {
-			int mx = LOWORD(lParam);
-			int my = HIWORD(lParam);
+			int mx = ToGameX(LOWORD(lParam));
+			int my = ToGameY(HIWORD(lParam));
 			// 어디에 놓았는지 확인 (퀵슬롯 우선, 그다음 가방)
 			int dropQs = HitQuickSlot(mx, my);
 			if (dropQs >= 0) {
@@ -3215,13 +3264,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	{
 		// 드래그 중이면 마우스 위치 갱신해 아이콘이 커서 따라오게
 		if (g_draggedSlotIndex >= 0) {
-			g_dragMouseX = LOWORD(lParam);
-			g_dragMouseY = HIWORD(lParam);
+			g_dragMouseX = ToGameX(LOWORD(lParam));
+			g_dragMouseY = ToGameY(HIWORD(lParam));
 			InvalidateRect(hWnd, NULL, FALSE);
 		}
 		if (g_currentScene == SCENE_SHOP) {
-			int mx = LOWORD(lParam);
-			int my = HIWORD(lParam);
+			int mx = ToGameX(LOWORD(lParam));
+			int my = ToGameY(HIWORD(lParam));
 			int prevHover = g_shopHoverIdx;
 			int prevInvHover = g_shopInvHoverSlot;
 			g_shopHoverIdx = -1;
@@ -3608,6 +3657,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		}
 		break;
 
+	case WM_SIZE:
+	{
+		g_winW = LOWORD(lParam);
+		g_winH = HIWORD(lParam);
+		if (g_winW < 1) g_winW = 1;
+		if (g_winH < 1) g_winH = 1;
+		UpdateViewport();
+		InvalidateRect(hWnd, NULL, FALSE);
+		break;
+	}
+
 	case WM_DESTROY:
 		KillTimer(hWnd, 1001);
 		PostQuitMessage(0);
@@ -3652,6 +3712,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpszCmdPa
 
 	ShowWindow(hWnd, nCmdShow);
 	UpdateWindow(hWnd);
+	UpdateViewport();
 
 	while (GetMessage(&Message, 0, 0, 0)) {
 		TranslateMessage(&Message);
