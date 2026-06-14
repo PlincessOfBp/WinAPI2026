@@ -10,7 +10,7 @@
 //test.case1
 HINSTANCE g_hInst;
 LPCTSTR lpszClass = L"Window Class";
-LPCTSTR lpszWindowName = L"windows program 1";
+LPCTSTR lpszWindowName = L"Harvest Defense";
 
 enum GameScene {
 	SCENE_FARM = 0,        // 농장 화면 (조성현 담당)
