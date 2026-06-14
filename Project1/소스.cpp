@@ -16,8 +16,16 @@ enum GameScene {
 	SCENE_FARM = 0,        // 농장 화면 (조성현 담당)
 	SCENE_FISHING = 1,     // 낚시 화면 (문선우 담당)
 	SCENE_FISHING_MAP = 1, // (별칭) 친구 낚시 맵
-	SCENE_SHOP = 2         // 상점 화면 (집 문으로 진입)
+	SCENE_SHOP = 2,        // 상점 화면 (집 문으로 진입)
+	SCENE_DEFENSE = 3      // 7일차마다 타워 디펜스
 };
+
+// 게임 페이즈: 일반 농사 페이즈 vs 디펜스 페이즈
+enum GamePhase {
+	PHASE_NORMAL = 0,   // 1~6일차: 농사/낚시 자유 진행
+	PHASE_DEFENSE = 1   // 7,14,21...일차: 디펜스 모드
+};
+static GamePhase g_currentPhase = PHASE_NORMAL;
 static GameScene g_currentScene = SCENE_FARM;
 
 #define CLIENT_W 800
@@ -276,6 +284,12 @@ void DrawNightOverlay(HDC hDC) {
 // 전방 선언: 실제 본체는 farmState/g_cropType 등 정의 아래에 있음
 void UpdateFarmAtNight();
 void UpdateGameTime();
+// 디펜스 함수 전방 선언 (본체는 아래쪽에 있음)
+void StartDefense();
+void EndDefenseReturnToFarm();
+void UpdateDefense();
+void DrawDefenseScene(HDC hdc);
+void AdvanceToNextDay();
 
 // ---------- 전방 선언: 아래쪽에 정의된 함수 미리 알려주기 ----------
 static bool RectOverlap(int ax, int ay, int aw, int ah,
@@ -415,6 +429,123 @@ static void SetFarmTile(int col, int row, const FarmTile& t) {
 // 작물 비트맵 [CropType][growStage 0~3]
 static HBITMAP g_hBitmap_crop[CROP_COUNT][4] = { NULL, };
 
+// ============================================================================
+// [디펜스 시스템] 7일차마다 발생하는 타워 디펜스
+// ============================================================================
+
+// 몬스터 종류
+enum MonsterType {
+	MON_NONE = 0,
+	MON_SLIME = 1,
+	MON_BAT = 2,
+	MON_BOSS = 3
+};
+
+// 웨이브 상태
+enum WaveState {
+	WAVE_PREP = 0,      // 준비 시간 (5초)
+	WAVE_SPAWNING = 1,  // 스폰 진행 중
+	WAVE_FIGHTING = 2   // 스폰 끝나고 남은 몬스터 처치 대기
+};
+
+// 몬스터 구조체 (웨이포인트 추적)
+struct Monster {
+	bool alive;
+	int  type;                  // MonsterType
+	float x, y;                 // 화면 좌표
+	int  w, h;                  // 충돌/표시 크기
+	int  hp;
+	float speed;
+	int  animFrame;
+	int  animTimer;
+	int  currentWaypointIndex;  // 현재 추적 중인 웨이포인트
+};
+
+// 포탑 구조체
+struct Turret {
+	bool active;
+	int  x, y;                  // 화면 좌표
+	int  w, h;
+	int  shootTimer;
+};
+#define MAX_TURRETS 32
+static Turret g_turrets[MAX_TURRETS];
+
+#define MAX_MONSTERS 64
+static Monster g_monsters[MAX_MONSTERS];
+
+// 디펜스 맵 비트맵
+static HBITMAP g_hBitmap_defMap = NULL;
+static HBITMAP g_hBitmap_defHouse = NULL;
+static HBITMAP g_hBitmap_slime[7] = { NULL, };
+static HBITMAP g_hBitmap_bat[4] = { NULL, };
+
+// 기지 (디펜스 집)
+#define DEFENSE_HOUSE_W      64
+#define DEFENSE_HOUSE_H      64
+// 화면 크기가 동적으로 바뀌므로 함수형으로 위치 계산
+static inline int DefenseHouseX() { return g_logicalW / 2 - DEFENSE_HOUSE_W / 2; }
+static inline int DefenseHouseY() { return g_logicalH / 2 - DEFENSE_HOUSE_H / 2; }
+#define DEFENSE_HOUSE_X      DefenseHouseX()
+#define DEFENSE_HOUSE_Y      DefenseHouseY()
+static int g_defenseHouseHP = 100;
+static int g_defenseHouseHPMax = 100;
+
+// 웨이브 시스템
+static int       g_currentWave = 1;
+static WaveState g_waveState = WAVE_PREP;
+static int       g_wavePrepTimer = 0;    // PREP 카운트다운
+static int       g_waveSpawnTimer = 0;    // 스폰 간격 카운트
+static int       g_waveSlimeRemaining = 0;    // 이번 웨이브 남은 슬라임 스폰 수
+static int       g_waveBatRemaining = 0;    // 이번 웨이브 남은 박쥐 스폰 수
+static int       g_waveBossRemaining = 0;    // 이번 웨이브 남은 보스 스폰 수
+static int       g_waveAliveMonsters = 0;
+static bool      g_defenseSuccess = false;
+
+#define WAVE_TOTAL              5
+#define WAVE_PREP_TICKS       166      // 약 5초 (30ms × 166)
+#define SPAWN_INTERVAL_TICKS   30      // 약 0.9초마다 1마리
+
+// ===== 웨이포인트 (나선형 길) =====
+// 사용자가 빨간 화살표로 표시한 경로:
+//   우하 → 좌하(←) → 좌상(↑) → 우상(→) → 안쪽 진입(↓)
+//   → 안쪽 좌상(←) → 안쪽 좌하(↓) → 안쪽 우하(→) → 안쪽 우상(↑)
+//   → 가장 안쪽 좌상(←) → 좌하(↓) → 우하(→) → 우상(↑)
+//   → 집 도달
+// 1280x1280 맵 기준 좌표. 화면 그릴 때 g_logicalW/H 비율로 변환.
+static POINT g_waypoints[] = {
+	// 외곽 한 바퀴 — 우하 시작, 왼쪽부터
+	{ 1180, 1180 },   // 0: 시작 우측 하단
+	{  100, 1180 },   // 1: 좌측 하단 (← 왼쪽)
+	{  100,  100 },   // 2: 좌측 상단 (↑ 위)
+	{ 1180,  100 },   // 3: 우측 상단 (→ 오른쪽)
+
+	// 안쪽 한 칸 진입 후 또 같은 방향
+	{ 1180,  260 },   // 4: 우측 살짝 아래 (↓ 한 칸 안쪽)
+	{  260,  260 },   // 5: 안쪽 좌상 (←)
+	{  260, 1020 },   // 6: 안쪽 좌하 (↓)
+	{ 1020, 1020 },   // 7: 안쪽 우하 (→)
+
+	// 한 칸 더 안쪽
+	{ 1020,  400 },   // 8: 안쪽 우상 (↑)
+	{  400,  400 },   // 9: 더 안쪽 좌상 (←)
+	{  400,  880 },   // 10: 더 안쪽 좌하 (↓)
+	{  880,  880 },   // 11: 더 안쪽 우하 (→)
+
+	// 집 향해 마지막 진입
+	{  880,  560 },   // 12: 더 안쪽 우상 (↑)
+	{  640,  640 }    // 13: 집 (← 약간)
+};
+#define WAYPOINT_COUNT  ((int)(sizeof(g_waypoints) / sizeof(g_waypoints[0])))
+
+// 웨이포인트를 화면 좌표로 변환 (1280 기준 → g_logicalW/H 비율)
+static void GetWaypointScreen(int idx, int* outX, int* outY) {
+	if (idx < 0) idx = 0;
+	if (idx >= WAYPOINT_COUNT) idx = WAYPOINT_COUNT - 1;
+	*outX = g_waypoints[idx].x * g_logicalW / 1280;
+	*outY = g_waypoints[idx].y * g_logicalH / 1280;
+}
+
 // (SeedToCrop / CropToHarvestItem 본체는 ItemType 정의 후에 위치함 — 아래쪽 참조)
 
 // 농사 타일 시트에서 잘라낼 좌표 (사용자 지정값)
@@ -446,7 +577,7 @@ enum ToolType {
 	ITEM_POTATO = 15,       // 감자 (수확)
 	ITEM_RHUBARB = 16,      // 대황 (수확)
 	ITEM_STRAWBERRY = 17,   // 딸기 (수확)
-	ITEM_TURRET = 18,       // 터렛
+	ITEM_TURRET = 18,       // 디펜스용 포탑
 	ITEM_COUNT = 19
 };
 // ItemType 은 ToolType 동의어 (사용자 요청 이름)
@@ -507,12 +638,68 @@ void UpdateFarmAtNight() {
 		}
 	}
 }
+// ===== [시연용 Next Day 버튼] =====
+#define NEXTDAY_BTN_X   700
+#define NEXTDAY_BTN_Y    20
+#define NEXTDAY_BTN_W    90
+#define NEXTDAY_BTN_H    32
+
+static bool IsClickInNextDayBtn(int mx, int my) {
+	return (mx >= NEXTDAY_BTN_X && mx < NEXTDAY_BTN_X + NEXTDAY_BTN_W &&
+		my >= NEXTDAY_BTN_Y && my < NEXTDAY_BTN_Y + NEXTDAY_BTN_H);
+}
+
+void DrawNextDayButton(HDC hdc) {
+	// 회색 배경
+	HBRUSH bg = CreateSolidBrush(RGB(60, 60, 90));
+	RECT r = { NEXTDAY_BTN_X, NEXTDAY_BTN_Y,
+			   NEXTDAY_BTN_X + NEXTDAY_BTN_W, NEXTDAY_BTN_Y + NEXTDAY_BTN_H };
+	FillRect(hdc, &r, bg);
+	DeleteObject(bg);
+	// 노란 테두리
+	HPEN p = CreatePen(PS_SOLID, 2, RGB(220, 220, 80));
+	HPEN op = (HPEN)SelectObject(hdc, p);
+	HBRUSH nb = (HBRUSH)GetStockObject(NULL_BRUSH);
+	HBRUSH ob = (HBRUSH)SelectObject(hdc, nb);
+	Rectangle(hdc, NEXTDAY_BTN_X, NEXTDAY_BTN_Y,
+		NEXTDAY_BTN_X + NEXTDAY_BTN_W, NEXTDAY_BTN_Y + NEXTDAY_BTN_H);
+	SelectObject(hdc, op);
+	SelectObject(hdc, ob);
+	DeleteObject(p);
+	// 텍스트
+	SetBkMode(hdc, TRANSPARENT);
+	SetTextColor(hdc, RGB(255, 255, 255));
+	const wchar_t* label = L"[Next Day]";
+	TextOut(hdc, NEXTDAY_BTN_X + 6, NEXTDAY_BTN_Y + 8, label, (int)wcslen(label));
+}
+
 void UpdateGameTime() {
 	g_timeOfDay += TIME_OF_DAY_STEP;
 	if (g_timeOfDay >= 1.0f) {
 		g_timeOfDay = 0.0f;
 		g_gameDay++;
 		UpdateFarmAtNight();   // 새 날 시작 시 농장 갱신
+		// [디펜스 진입] 7의 배수 일차 아침이면 디펜스 시작
+		if (g_currentPhase == PHASE_NORMAL && (g_gameDay % 7) == 0) {
+			StartDefense();
+		}
+	}
+}
+
+// [시연/테스트용] 즉시 다음 날 아침으로 스킵.
+// 인벤토리는 유지하고, 시간/날짜만 갱신, UpdateFarmAtNight 강제 호출,
+// 7일차 도달 시 디펜스 트리거도 자연스럽게 발동.
+void AdvanceToNextDay() {
+	// 인벤토리(quickSlots / bagSlots / g_*Count)는 그대로 두기 — 의도적으로 안 건드림.
+	g_gameDay++;
+	g_timeOfDay = 0.0f;   // 즉시 새날 아침
+
+	// 농사 성장 1단계 즉시 진행 (씨앗 → grow1 → grow2 → ready)
+	UpdateFarmAtNight();
+
+	// 7일차/14일차/... 도달 시 디펜스 자연 진입 (UpdateGameTime 과 동일한 흐름)
+	if (g_currentPhase == PHASE_NORMAL && (g_gameDay % 7) == 0) {
+		StartDefense();
 	}
 }
 
@@ -631,15 +818,21 @@ static ItemType g_draggedItem = ITEM_NONE;
 static int      g_dragMouseX = 0, g_dragMouseY = 0;  // 현재 마우스 위치 (드래그 아이콘 그리기용)
 
 // ---------- UI 화면 좌표 ----------
-// 1줄 퀵슬롯: inventory_1.bmp 300x96, 화면 하단 중앙
+// 1줄 퀵슬롯: inventory_1.bmp 300x96
+//   - SCENE_DEFENSE: 화면 상단 (몬스터 경로 안 가리게)
+//   - 그 외: 화면 하단 중앙
 #define QUICKSLOT_BG_W        300
 #define QUICKSLOT_BG_H         96
-#define QUICKSLOT_BG_X        (g_logicalW / 2 - (QUICKSLOT_BG_W + 64) / 2)   // 가방 옆에 붙여 그리므로 합쳐 중앙
-#define QUICKSLOT_BG_Y        (g_logicalH - QUICKSLOT_BG_H - 20)
+#define QUICKSLOT_BG_X        (g_logicalW / 2 - (QUICKSLOT_BG_W + 64) / 2)
+// 디펜스 씬에서만 상단(20), 그 외엔 하단 — 함수형으로 두면 그리기/충돌 양쪽 모두 자동 반영
+static inline int QuickbarY() {
+	return (g_currentScene == SCENE_DEFENSE) ? 20 : (g_logicalH - QUICKSLOT_BG_H - 20);
+}
+#define QUICKSLOT_BG_Y        QuickbarY()
 #define QUICKSLOT_ICON_SIZE    48
 #define QUICKSLOT_PAD          12
 
-// 가방 아이콘 (Inventory.bmp 64x68) - 1줄 인벤토리 바로 옆
+// 가방 아이콘 (Inventory.bmp 64x68) - 1줄 인벤토리 바로 옆 (퀵슬롯 따라 자동 이동)
 #define BAG_W                 64
 #define BAG_H                 68
 #define BAG_X                 (QUICKSLOT_BG_X + QUICKSLOT_BG_W + 4)
@@ -907,6 +1100,414 @@ void DrawFarmTiles(HDC hdc) {
 		}
 	}
 	DeleteDC(hdcTileMem);
+}
+
+// ============================================================================
+// [디펜스] 함수들
+// ============================================================================
+
+// 웨이브별 슬라임/박쥐/보스 수 (사용자 명시 공식)
+static void GetWaveSpawnCount(int wave, int* outSlime, int* outBat, int* outBoss) {
+	int s = 0, b = 0, bs = 0;
+	switch (wave) {
+	case 1: s = 2; b = 3; break;
+	case 2: s = 4; b = 3; break;
+	case 3: s = 4; b = 5; break;
+	case 4: s = 6; b = 5; break;
+	case 5: bs = 1; break;
+	default: s = 0; b = 0; break;
+	}
+	// 7일차 누적 보너스 (일종의 난이도 상승)
+	int wk = (g_gameDay / 7);
+	if (wave != 5 && wk > 1) {
+		s += (wk - 1) * 2;
+		b += (wk - 1) * 1;
+	}
+	if (outSlime) *outSlime = s;
+	if (outBat)   *outBat = b;
+	if (outBoss)  *outBoss = bs;
+}
+
+// 빈 몬스터 슬롯 찾기
+static int FindFreeMonsterSlot() {
+	for (int i = 0; i < MAX_MONSTERS; i++) {
+		if (!g_monsters[i].alive) return i;
+	}
+	return -1;
+}
+
+// 몬스터 1마리 스폰 (웨이포인트 0번 위치에서 출발)
+static void SpawnOneMonster(int monsterType) {
+	int idx = FindFreeMonsterSlot();
+	if (idx < 0) return;
+	Monster& m = g_monsters[idx];
+	m.alive = true;
+	m.type = monsterType;
+	m.animFrame = 0;
+	m.animTimer = 0;
+	m.currentWaypointIndex = 1;  // 0번 출발점 → 1번부터 따라감
+
+	// 첫 웨이포인트(시작점) 위치에서 스폰
+	int sx, sy;
+	GetWaypointScreen(0, &sx, &sy);
+
+	if (monsterType == MON_BOSS) {
+		m.w = 128; m.h = 128;
+		m.hp = 300;
+		m.speed = 2.2f;
+	}
+	else if (monsterType == MON_BAT) {
+		m.w = 64; m.h = 68;
+		m.hp = 20;
+		m.speed = 1.6f;
+	}
+	else { // SLIME
+		m.w = 64; m.h = 64;
+		m.hp = 15;
+		m.speed = 1.2f;
+	}
+	m.x = (float)(sx - m.w / 2);
+	m.y = (float)(sy - m.h / 2);
+}
+
+// 좌표가 '잔디'(포탑 배치 가능)인지 검사
+// 단순화: 노란 길에서 충분히 떨어진 영역만 잔디로 인정.
+// 사용자가 정확한 잔디/길 격자 데이터 만들기 전까지의 임시 검사.
+static bool IsGrassForTurret(int mx, int my) {
+	// 1) 디펜스 씬 영역 안에 있어야 함
+	if (mx < 50 || mx > g_logicalW - 50) return false;
+	if (my < 80 || my > g_logicalH - 50) return false;
+	// 2) 집 주변 너무 가까우면 거부
+	int hx = DEFENSE_HOUSE_X, hy = DEFENSE_HOUSE_Y;
+	if (mx >= hx - 30 && mx < hx + DEFENSE_HOUSE_W + 30 &&
+		my >= hy - 30 && my < hy + DEFENSE_HOUSE_H + 30) return false;
+	// 3) 노란 길에서 50픽셀 이상 떨어진 곳만 잔디로 인정
+	for (int i = 0; i < WAYPOINT_COUNT - 1; i++) {
+		int x1, y1, x2, y2;
+		GetWaypointScreen(i, &x1, &y1);
+		GetWaypointScreen(i + 1, &x2, &y2);
+		// 두 점 사이 거리 (수직 또는 수평 길이므로 간단히)
+		int minX = (x1 < x2) ? x1 : x2;
+		int maxX = (x1 > x2) ? x1 : x2;
+		int minY = (y1 < y2) ? y1 : y2;
+		int maxY = (y1 > y2) ? y1 : y2;
+		// 길 양옆 40px 안이면 거부
+		if (mx >= minX - 40 && mx <= maxX + 40 &&
+			my >= minY - 40 && my <= maxY + 40) return false;
+	}
+	return true;
+}
+
+// 빈 포탑 슬롯 찾기
+static int FindFreeTurretSlot() {
+	for (int i = 0; i < MAX_TURRETS; i++) {
+		if (!g_turrets[i].active) return i;
+	}
+	return -1;
+}
+
+// 포탑 배치 시도 — 성공 시 true
+bool TryPlaceTurret(int mx, int my) {
+	if (g_currentScene != SCENE_DEFENSE) return false;
+	if (!IsGrassForTurret(mx, my)) return false;
+	int idx = FindFreeTurretSlot();
+	if (idx < 0) return false;
+	Turret& t = g_turrets[idx];
+	t.active = true;
+	t.w = 32; t.h = 32;
+	t.x = mx - t.w / 2;
+	t.y = my - t.h / 2;
+	t.shootTimer = 0;
+	return true;
+}
+
+// 새 웨이브 시작 시 PREP 상태로 진입 + 스폰 카운트 세팅
+static void StartWavePrep() {
+	g_waveState = WAVE_PREP;
+	g_wavePrepTimer = WAVE_PREP_TICKS;
+	g_waveSpawnTimer = 0;
+	GetWaveSpawnCount(g_currentWave,
+		&g_waveSlimeRemaining, &g_waveBatRemaining, &g_waveBossRemaining);
+}
+
+// 디펜스 시작 (씬 진입 시 한 번)
+void StartDefense() {
+	g_currentScene = SCENE_DEFENSE;
+	g_currentPhase = PHASE_DEFENSE;
+	g_currentWave = 1;
+	g_waveAliveMonsters = 0;
+	g_defenseHouseHP = g_defenseHouseHPMax;
+	g_defenseSuccess = false;
+	for (int i = 0; i < MAX_MONSTERS; i++) g_monsters[i].alive = false;
+	for (int i = 0; i < MAX_TURRETS; i++)  g_turrets[i].active = false;
+	// (임시 주석: 포탑 자동 지급은 나중에 — 일단 시스템 동작만 확인)
+	// AddItemToBag((ItemType)ITEM_TURRET);
+	// AddItemToBag((ItemType)ITEM_TURRET);
+	// AddItemToBag((ItemType)ITEM_TURRET);
+	// AddItemToBag((ItemType)ITEM_TURRET);
+	// AddItemToBag((ItemType)ITEM_TURRET);
+	StartWavePrep();
+}
+
+// 디펜스 종료 (다음날 농장으로 복귀)
+void EndDefenseReturnToFarm() {
+	g_currentScene = SCENE_FARM;
+	g_currentPhase = PHASE_NORMAL;
+	g_gameDay++;  // 8일차 아침
+	g_timeOfDay = 0.0f;
+}
+
+// 매 틱 업데이트: 상태머신 (PREP → SPAWNING → FIGHTING)
+void UpdateDefense() {
+	// ---- 1) 상태별 처리 ----
+	if (g_waveState == WAVE_PREP) {
+		g_wavePrepTimer--;
+		if (g_wavePrepTimer <= 0) {
+			g_waveState = WAVE_SPAWNING;
+			g_waveSpawnTimer = 0;
+		}
+	}
+	else if (g_waveState == WAVE_SPAWNING) {
+		g_waveSpawnTimer++;
+		if (g_waveSpawnTimer >= SPAWN_INTERVAL_TICKS) {
+			g_waveSpawnTimer = 0;
+			// 슬라임 우선, 그다음 박쥐, 그다음 보스
+			if (g_waveSlimeRemaining > 0) {
+				SpawnOneMonster(MON_SLIME);
+				g_waveSlimeRemaining--;
+				g_waveAliveMonsters++;
+			}
+			else if (g_waveBatRemaining > 0) {
+				SpawnOneMonster(MON_BAT);
+				g_waveBatRemaining--;
+				g_waveAliveMonsters++;
+			}
+			else if (g_waveBossRemaining > 0) {
+				SpawnOneMonster(MON_BOSS);
+				g_waveBossRemaining--;
+				g_waveAliveMonsters++;
+			}
+			else {
+				// 스폰 완료 → FIGHTING
+				g_waveState = WAVE_FIGHTING;
+			}
+		}
+	}
+	else if (g_waveState == WAVE_FIGHTING) {
+		// 살아있는 몬스터 다 처치되면 다음 웨이브
+		if (g_waveAliveMonsters <= 0) {
+			if (g_currentWave >= WAVE_TOTAL) {
+				g_defenseSuccess = true;
+			}
+			else {
+				g_currentWave++;
+				StartWavePrep();
+			}
+		}
+	}
+
+	// ---- 2) 몬스터 이동 (웨이포인트 추적) ----
+	for (int i = 0; i < MAX_MONSTERS; i++) {
+		Monster& m = g_monsters[i];
+		if (!m.alive) continue;
+
+		// 현재 타겟 웨이포인트
+		int wpX, wpY;
+		GetWaypointScreen(m.currentWaypointIndex, &wpX, &wpY);
+
+		float mcx = m.x + m.w / 2.0f;
+		float mcy = m.y + m.h / 2.0f;
+		float dx = (float)wpX - mcx;
+		float dy = (float)wpY - mcy;
+		float dist = (float)sqrt(dx * dx + dy * dy);
+
+		if (dist < m.speed + 2.0f) {
+			// 웨이포인트 도착 → 다음으로
+			m.currentWaypointIndex++;
+			if (m.currentWaypointIndex >= WAYPOINT_COUNT) {
+				// 마지막 웨이포인트(집) 도달 → 집 데미지
+				int damage = (m.type == MON_BOSS) ? 100 : 10;
+				g_defenseHouseHP -= damage;
+				if (g_defenseHouseHP < 0) g_defenseHouseHP = 0;
+				m.alive = false;
+				g_waveAliveMonsters--;
+				continue;
+			}
+		}
+		else {
+			m.x += (dx / dist) * m.speed;
+			m.y += (dy / dist) * m.speed;
+		}
+
+		// 애니 프레임
+		m.animTimer++;
+		if (m.animTimer >= 8) {
+			m.animTimer = 0;
+			int maxF = (m.type == MON_BAT) ? 4 : 7;
+			m.animFrame = (m.animFrame + 1) % maxF;
+		}
+	}
+
+	// ---- 3) 포탑 공격 (간단: 가장 가까운 몬스터에게 일정 간격 데미지) ----
+	for (int t = 0; t < MAX_TURRETS; t++) {
+		Turret& tu = g_turrets[t];
+		if (!tu.active) continue;
+		tu.shootTimer++;
+		if (tu.shootTimer < 25) continue;
+		tu.shootTimer = 0;
+		// 가장 가까운 몬스터 한 마리에게 데미지
+		int closestIdx = -1;
+		float closestDist = 250.0f * 250.0f;  // 사정거리 250px
+		for (int i = 0; i < MAX_MONSTERS; i++) {
+			Monster& m = g_monsters[i];
+			if (!m.alive) continue;
+			float dx = (m.x + m.w / 2.0f) - (tu.x + tu.w / 2.0f);
+			float dy = (m.y + m.h / 2.0f) - (tu.y + tu.h / 2.0f);
+			float d2 = dx * dx + dy * dy;
+			if (d2 < closestDist) { closestDist = d2; closestIdx = i; }
+		}
+		if (closestIdx >= 0) {
+			Monster& m = g_monsters[closestIdx];
+			m.hp -= 8;
+			if (m.hp <= 0) {
+				m.alive = false;
+				g_waveAliveMonsters--;
+			}
+		}
+	}
+
+	// ---- 4) 종료 ----
+	if (g_defenseSuccess) {
+		static bool shown = false;
+		if (!shown) {
+			shown = true;
+			MessageBox(NULL, TEXT("디펜스 성공! 다음 날 아침 농장으로 복귀합니다."), TEXT("승리"), MB_OK);
+			EndDefenseReturnToFarm();
+			shown = false;
+		}
+	}
+	else if (g_defenseHouseHP <= 0) {
+		static bool shown = false;
+		if (!shown) {
+			shown = true;
+			MessageBox(NULL, TEXT("기지 파괴! 게임 오버 — 농장으로 복귀합니다."), TEXT("패배"), MB_OK);
+			EndDefenseReturnToFarm();
+			shown = false;
+		}
+	}
+}
+
+// 디펜스 씬 그리기 (카메라 0 고정, 백버퍼 전체 꽉 채움)
+void DrawDefenseScene(HDC hdc) {
+	HDC memDC = CreateCompatibleDC(hdc);
+
+	// 1) 디펜스 맵 배경 (1280x1280 → 백버퍼 전체 g_logicalW × g_logicalH 로 StretchBlt)
+	//    창을 가로/세로로 늘려도 빈 영역 없이 가득 차게.
+	if (g_hBitmap_defMap != NULL) {
+		HBITMAP old = (HBITMAP)SelectObject(memDC, g_hBitmap_defMap);
+		SetStretchBltMode(hdc, HALFTONE);
+		StretchBlt(hdc, 0, 0, g_logicalW, g_logicalH,
+			memDC, 0, 0, 1280, 1280, SRCCOPY);
+		SelectObject(memDC, old);
+	}
+
+	// 2) 기지 집 — 백버퍼 정중앙 (g_logicalW/H 기준)
+	int houseX = g_logicalW / 2 - DEFENSE_HOUSE_W / 2;
+	int houseY = g_logicalH / 2 - DEFENSE_HOUSE_H / 2;
+	if (g_hBitmap_defHouse != NULL) {
+		HBITMAP old = (HBITMAP)SelectObject(memDC, g_hBitmap_defHouse);
+		TransparentBlt(hdc,
+			houseX, houseY, DEFENSE_HOUSE_W, DEFENSE_HOUSE_H,
+			memDC, 0, 0, 64, 64, RGB(255, 0, 255));
+		SelectObject(memDC, old);
+	}
+
+	// 3) 몬스터들
+	for (int i = 0; i < MAX_MONSTERS; i++) {
+		Monster& m = g_monsters[i];
+		if (!m.alive) continue;
+		HBITMAP src = NULL;
+		if (m.type == MON_SLIME) {
+			int f = m.animFrame; if (f < 0 || f > 6) f = 0;
+			src = g_hBitmap_slime[f];
+		}
+		else if (m.type == MON_BAT) {
+			int f = m.animFrame; if (f < 0 || f > 3) f = 0;
+			src = g_hBitmap_bat[f];
+		}
+		else if (m.type == MON_BOSS) {
+			// 보스: 슬라임 비트맵을 StretchBlt로 2배 (128x128)
+			int f = m.animFrame; if (f < 0 || f > 6) f = 0;
+			src = g_hBitmap_slime[f];
+		}
+		if (src == NULL) continue;
+
+		HBITMAP old = (HBITMAP)SelectObject(memDC, src);
+		if (m.type == MON_BOSS) {
+			// 64x64 원본 → 128x128 출력 (StretchBlt + 마젠타 키컬러 못 쓰니 TransparentBlt 활용)
+			TransparentBlt(hdc, (int)m.x, (int)m.y, m.w, m.h,
+				memDC, 0, 0, 64, 64, RGB(255, 0, 255));
+		}
+		else {
+			TransparentBlt(hdc, (int)m.x, (int)m.y, m.w, m.h,
+				memDC, 0, 0, m.w, m.h, RGB(255, 0, 255));
+		}
+		SelectObject(memDC, old);
+	}
+
+	// 4) 포탑 그리기 (간단: 노란 사각형)
+	for (int t = 0; t < MAX_TURRETS; t++) {
+		Turret& tu = g_turrets[t];
+		if (!tu.active) continue;
+		HBRUSH br = CreateSolidBrush(RGB(220, 220, 80));
+		RECT r = { tu.x, tu.y, tu.x + tu.w, tu.y + tu.h };
+		FillRect(hdc, &r, br);
+		DeleteObject(br);
+	}
+
+	DeleteDC(memDC);
+
+	// 5) 상단 HUD: 웨이브 / 집 HP
+	SetBkMode(hdc, TRANSPARENT);
+	SetTextColor(hdc, RGB(255, 255, 255));
+	wchar_t buf[128];
+	wsprintfW(buf, L"WAVE %d / %d   기지 HP: %d / %d",
+		g_currentWave, WAVE_TOTAL, g_defenseHouseHP, g_defenseHouseHPMax);
+	TextOut(hdc, 10, 10, buf, (int)wcslen(buf));
+
+	// 6) PREP 상태일 때 — 집과 상단 퀵슬롯 사이 위치 (집 바로 위쪽)
+	if (g_waveState == WAVE_PREP) {
+		int secLeft = (g_wavePrepTimer / 33) + 1;
+		if (secLeft > 5) secLeft = 5;
+		if (secLeft < 1) secLeft = 1;
+
+		// 집 바로 위쪽에 안내 + 카운트다운 표시
+		int textCenterY = houseY - 140;  // 집보다 140px 위
+		if (textCenterY < 130) textCenterY = 130;  // 퀵슬롯(상단)과 겹치지 않게 최소 130
+
+		// 안내 텍스트
+		const wchar_t* msg = L"포탑을 배치하세요!";
+		SetBkMode(hdc, TRANSPARENT);
+		SetTextColor(hdc, RGB(255, 230, 80));
+		TextOut(hdc, g_logicalW / 2 - 90, textCenterY, msg, (int)wcslen(msg));
+
+		// 큰 폰트로 카운트다운 숫자 (안내 텍스트 바로 아래)
+		HFONT hBig = CreateFont(
+			80, 0, 0, 0, FW_BOLD,
+			FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+			OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+			TEXT("맑은 고딕"));
+		HFONT hOld = (HFONT)SelectObject(hdc, hBig);
+		// 0.5초 간격 색 깜빡임
+		bool blink = ((g_wavePrepTimer / 16) % 2) == 0;
+		SetTextColor(hdc, blink ? RGB(255, 60, 60) : RGB(255, 230, 80));
+		wchar_t numBuf[8];
+		wsprintfW(numBuf, L"%d", secLeft);
+		TextOut(hdc, g_logicalW / 2 - 22, textCenterY + 30, numBuf, (int)wcslen(numBuf));
+		SelectObject(hdc, hOld);
+		DeleteObject(hBig);
+	}
 }
 
 // ---------- 작물 그리기 (흙 32x32 안에 딱 맞춰 그림 — TransparentBlt 자동 축소) ----------
@@ -2452,7 +3053,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	PAINTSTRUCT ps;
 	HBRUSH hBrush = (HBRUSH)GetStockObject(BLACK_BRUSH), oldBrush = (HBRUSH)GetStockObject(BLACK_BRUSH);
 	HPEN hPen = (HPEN)GetStockObject(BLACK_PEN), oldPen = (HPEN)GetStockObject(BLACK_PEN);
-	TCHAR str[100];
 
 	static HBITMAP hBitmap;
 	static RECT rc;
@@ -2542,6 +3142,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		g_hBitmap_item[ITEM_RHUBARB] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Rhubarb_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		g_hBitmap_item[ITEM_STRAWBERRY] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Strawberry_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		g_hBitmap_item[ITEM_TURRET] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\디펜스\\turret_shoot_옆1_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+
+		// ----- [디펜스 시스템] 비트맵 로드 -----
+		g_hBitmap_defMap = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\디펜스\\DefenseMap_1280x1280.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_defHouse = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\디펜스\\DefenseMap_House_64x64.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		for (int sN = 0; sN < 7; sN++) {
+			wchar_t path[256];
+			wsprintfW(path, L"이미지소스\\디펜스\\Slime%d_64x64.bmp", sN);
+			g_hBitmap_slime[sN] = (HBITMAP)LoadImage(g_hInst, path, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		}
+		for (int sN = 0; sN < 4; sN++) {
+			wchar_t path[256];
+			wsprintfW(path, L"이미지소스\\디펜스\\Bat%d_64x68.bmp", sN);
+			g_hBitmap_bat[sN] = (HBITMAP)LoadImage(g_hInst, path, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		}
+		for (int mi = 0; mi < MAX_MONSTERS; mi++) g_monsters[mi].alive = false;
 
 		InitTrees();
 		g_house.x = 705; g_house.y = 470;   // 절대 좌표 고정 (흙길 끝 빨간 영역)
@@ -2870,6 +3485,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			break;
 		}
 
+		case SCENE_DEFENSE:
+		{
+			// 디펜스 씬 — 카메라 0 고정, 화면 800x800 꽉 채움
+			DrawDefenseScene(backDC);
+			break;
+		}
+
 		case SCENE_SHOP:
 		{
 			// 상점 씬: 임시 회색 배경 + 안내 텍스트
@@ -3048,6 +3670,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		DrawNightOverlay(backDC);
 		DrawQuickSlot(backDC);
 		DrawInventoryPanel(backDC);
+		// [시연용] Next Day 버튼 — 모든 씬에서 항상 표시
+		DrawNextDayButton(backDC);
 		DrawDraggedItem(backDC);
 
 		// 화면으로 한 번에 복사
@@ -3125,6 +3749,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		{
 			int mx = ToGameX(LOWORD(lParam));
 			int my = ToGameY(HIWORD(lParam));
+
+			// 0) [시연용] Next Day 버튼 — 항상 최우선
+			if (IsClickInNextDayBtn(mx, my)) {
+				AdvanceToNextDay();
+				InvalidateRect(hWnd, NULL, FALSE);
+				break;
+			}
 
 			// 1) 가방 아이콘 클릭 → 인벤토리 토글 (상점 제외 모든 씬에서)
 			if (IsClickInBag(mx, my) && g_currentScene != SCENE_SHOP) {
@@ -3293,11 +3924,39 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			floatingGreenBar = false; // 낚시 게임 중 마우스 떼면 초록 게이지 내려감
 		}
 
-		// 드래그 종료: 놓은 위치 검사 후 swap 또는 취소
+		// 드래그 종료: 놓은 위치 검사 후 swap 또는 (디펜스 씬에서) 포탑 배치
 		if (g_draggedSlotIndex >= 0) {
 			int mx = ToGameX(LOWORD(lParam));
 			int my = ToGameY(HIWORD(lParam));
-			// 어디에 놓았는지 확인 (퀵슬롯 우선, 그다음 가방)
+
+			// [디펜스 + ITEM_TURRET] 잔디에 놓으면 포탑 배치
+			if (g_currentScene == SCENE_DEFENSE && g_draggedItem == ITEM_TURRET) {
+				// UI(가방/퀵슬롯) 영역이 아닌 곳에 놓았을 때만 시도
+				if (HitQuickSlot(mx, my) < 0 && HitInv4Cell(mx, my) < 0) {
+					if (TryPlaceTurret(mx, my)) {
+						// 인벤토리에서 포탑 1개 차감
+						if (g_isDraggingFromQuick) {
+							g_quickCount[g_draggedSlotIndex]--;
+							if (g_quickCount[g_draggedSlotIndex] <= 0) {
+								g_quickSlot[g_draggedSlotIndex] = ITEM_NONE;
+								g_quickCount[g_draggedSlotIndex] = 0;
+							}
+						}
+						else {
+							g_bagCount[g_draggedSlotIndex]--;
+							if (g_bagCount[g_draggedSlotIndex] <= 0) {
+								g_inv4[g_draggedSlotIndex] = ITEM_NONE;
+								g_bagCount[g_draggedSlotIndex] = 0;
+							}
+						}
+						CancelDrag();
+						InvalidateRect(hWnd, NULL, FALSE);
+						break;
+					}
+				}
+			}
+
+			// 일반 슬롯 간 swap
 			int dropQs = HitQuickSlot(mx, my);
 			if (dropQs >= 0) {
 				EndDrag(dropQs, true);
@@ -3308,7 +3967,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 					EndDrag(dropCell, false);
 				}
 				else {
-					// 빈 공간 → 취소 (원위치)
 					CancelDrag();
 				}
 			}
@@ -3364,7 +4022,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	{
 		switch (wParam) { // 타이머 규칙 : 0XXX : 플레이어 관련 타이머, 1XXX : 농사 관련 타이머, 2XXX : 낚시 관련 타이머, 3XXX : 디펜스 관련 타이머
 		case 0001: // 플레이어 이동 및 트리거 체크 타이머
-			if (g_currentScene == SCENE_FARM || g_currentScene == SCENE_FISHING) {
+			if (g_currentScene == SCENE_FARM || g_currentScene == SCENE_FISHING || g_currentScene == SCENE_DEFENSE) {
 
 				// farming 애니메이션 프레임 업데이트
 				if (g_isFarmingAnim && g_farmSeqPtr != NULL) {
@@ -3465,6 +4123,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				}
 				// [전역 유지] 게임 시간(낮/밤) 진행 — 씬과 무관하게 항상 계속 흐름
 				UpdateGameTime();
+				// [디펜스] 씬에서 매 틱 몬스터 이동/웨이브 진행 + 화면 갱신 보장
+				if (g_currentScene == SCENE_DEFENSE) {
+					UpdateDefense();
+					InvalidateRect(hWnd, NULL, FALSE);
+				}
 				// 농장 씬: 집 애니메이션 + 문열림 완료 시 SCENE_SHOP
 				if (g_currentScene == SCENE_FARM) {
 					UpdateHouseAnim();
@@ -3676,6 +4339,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				g_isInventoryOpen = !g_isInventoryOpen;
 			g_selectedInv4 = -1;
 			break;
+		case 'N':
+			// [시연용] 즉시 다음 날 아침으로 스킵
+			AdvanceToNextDay();
+			InvalidateRect(hWnd, NULL, FALSE);
+			break;
+
 		case 'Q':
 			// 상점 씬에 있을 때 Q 누르면 집 밖(농장)으로 나가기
 			if (g_currentScene == SCENE_SHOP) {
@@ -3752,7 +4421,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpszCmdPa
 
 	SetProcessDPIAware();
 
-	srand(time(NULL));
+	srand((unsigned int)time(NULL));
 
 	WndClass.cbSize = sizeof(WndClass);
 	WndClass.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
@@ -3784,5 +4453,5 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpszCmdPa
 		TranslateMessage(&Message);
 		DispatchMessage(&Message);
 	}
-	return Message.wParam;
+	return (int)Message.wParam;
 }
