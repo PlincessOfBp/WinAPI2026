@@ -953,39 +953,65 @@ static bool IsBlockedByHouse(int px, int py, int pw, int ph) {
 		HOUSE_DRAW_H - HOUSE_BLOCK_PAD_T - HOUSE_BLOCK_PAD_B);
 }
 
+// 나무 밑동(발판)에 충돌하는가 — 살아있는 나무만
+static bool IsBlockedByTree(int px, int py, int pw, int ph) {
+	for (size_t i = 0; i < g_trees.size(); i++) {
+		Tree& t = g_trees[i];
+		if (!t.isAlive) continue;
+		// 밑동 영역: 비트맵 가로 1/3, 세로 1/5 만 충돌 박스로
+		int trunkW = t.w / 3;
+		int trunkH = t.h / 5;
+		int trunkX = t.x + (t.w - trunkW) / 2;
+		int trunkY = t.y + t.h - trunkH;
+		if (RectOverlap(px, py, pw, ph, trunkX, trunkY, trunkW, trunkH)) return true;
+	}
+	return false;
+}
+
 // ---------- 나무 초기화: 절벽/집 피해서 15그루 ----------
+// ===== 고정 나무 배치 =====
+// 사용자가 빨간 영역으로 표시한 두 곳: 좌측 하단 영역 + 가운데~우측 하단 영역
+// kind: 0 = Tree1 (118x140 큰 나무), 1 = Tree2 (56x72 중간), 2 = Tree3 (50x62 작은)
+// 1280x1280 맵 기준 발판(밑동) 좌표 — 사용자가 직접 추가/삭제/이동 가능
+struct FixedTreePos { int x, y; int kind; };
+static FixedTreePos g_fixedTreeList[] = {
+	// ---- 좌측 하단 빨간 영역 ----
+	{  120,  900, 0 },
+	{  220,  820, 1 },
+	{  180, 1020, 2 },
+	{   70,  780, 1 },
+	{  260,  960, 0 },
+	{  140, 1100, 2 },
+
+	// ---- 가운데/우측 빨간 영역 ----
+	{  500,  920, 0 },
+	{  640,  860, 1 },
+	{  760,  990, 2 },
+	{  880,  900, 0 },
+	{ 1000,  960, 1 },
+	{ 1100, 1050, 2 },
+	{  550, 1080, 1 },
+	{  720, 1120, 2 },
+	{  900, 1140, 0 }
+};
+#define FIXED_TREE_COUNT  (sizeof(g_fixedTreeList) / sizeof(g_fixedTreeList[0]))
+
 void InitTrees() {
 	g_trees.clear();
-	int placed = 0;
-	int tries = 0;
-	while (placed < TREE_COUNT && tries < TREE_COUNT * 50) {
-		tries++;
+	for (int i = 0; i < (int)FIXED_TREE_COUNT; i++) {
 		Tree t;
-		t.kind = rand() % 3;
+		t.kind = g_fixedTreeList[i].kind;
 		if (t.kind == TREE_KIND_1) { t.w = 118; t.h = 140; }
 		else if (t.kind == TREE_KIND_2) { t.w = 56; t.h = 72; }
-		else { t.w = 50; t.h = 62; }
-		t.x = 80 + rand() % (MAP_PIXEL_W - t.w - 160);
-		t.y = 80 + rand() % (MAP_PIXEL_H - t.h - 160);
-		// 절벽/집 회피
-		bool bad = false;
-		// 발판(나무 밑동)이 절벽이면 거부
-		int footX = t.x + t.w / 2;
-		int footY = t.y + t.h - 6;
-		if (PointInCliff(footX, footY)) bad = true;
-		if (PointInHouseFootprint(footX, footY)) bad = true;
-		if (PointInNoTreeArea(footX, footY)) bad = true;   // 흙길/벽 옆면 회피
-		// 다른 나무와 너무 겹쳐도 거부
-		for (size_t k = 0; k < g_trees.size() && !bad; k++) {
-			Tree& o = g_trees[k];
-			if (RectOverlap(t.x, t.y, t.w, t.h, o.x, o.y, o.w, o.h)) bad = true;
-		}
-		if (bad) continue;
+		else                       { t.w = 50; t.h = 62; }
+		// 사용자가 지정한 좌표 = 나무 밑동(발판) 위치
+		// → 비트맵 좌상단 좌표는 발판에서 (w/2, h) 만큼 빼서 계산
+		t.x = g_fixedTreeList[i].x - t.w / 2;
+		t.y = g_fixedTreeList[i].y - t.h;
 		t.hp = TREE_HP_DEFAULT;
 		t.shakeTimer = 0;
 		t.isAlive = true;
 		g_trees.push_back(t);
-		placed++;
 	}
 }
 
@@ -2509,14 +2535,16 @@ void UpdatePlayer() {
 			int nextX = g_player.x + dx;
 			if (!alreadyInside && (
 				IsBlockedByCliff(nextX + footOffX, g_player.y + footOffY, footW, footH) ||
-				IsBlockedByHouse(nextX + footOffX, g_player.y + footOffY, footW, footH))) {
+				IsBlockedByHouse(nextX + footOffX, g_player.y + footOffY, footW, footH) ||
+				IsBlockedByTree (nextX + footOffX, g_player.y + footOffY, footW, footH))) {
 				nextX = g_player.x;
 				dx = 0;
 			}
 			int nextY = g_player.y + dy;
 			if (!alreadyInside && (
 				IsBlockedByCliff(nextX + footOffX, nextY + footOffY, footW, footH) ||
-				IsBlockedByHouse(nextX + footOffX, nextY + footOffY, footW, footH))) {
+				IsBlockedByHouse(nextX + footOffX, nextY + footOffY, footW, footH) ||
+				IsBlockedByTree (nextX + footOffX, nextY + footOffY, footW, footH))) {
 				nextY = g_player.y;
 				dy = 0;
 			}
