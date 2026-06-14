@@ -639,10 +639,10 @@ void UpdateFarmAtNight() {
 	}
 }
 // ===== [시연용 Next Day 버튼] =====
-#define NEXTDAY_BTN_X   700
-#define NEXTDAY_BTN_Y    20
 #define NEXTDAY_BTN_W    90
 #define NEXTDAY_BTN_H    32
+#define NEXTDAY_BTN_X   (g_logicalW - NEXTDAY_BTN_W - 10)
+#define NEXTDAY_BTN_Y    10
 
 static bool IsClickInNextDayBtn(int mx, int my) {
 	return (mx >= NEXTDAY_BTN_X && mx < NEXTDAY_BTN_X + NEXTDAY_BTN_W &&
@@ -3428,12 +3428,59 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			DrawCrops(backDC);
 
 
-			// 그리기 순서: 집 먼저 → 나무 나중 (나무가 집 앞에 그려져 자연스럽게)
+			// 그리기 순서: 집 먼저, 이후 나무/플레이어를 발 Y 기준으로 정렬해 앞뒤 처리
 			DrawHouseAnimated(backDC);
-			DrawFarmTrees(backDC);
-			DrawDroppedItem(backDC);
 
-			DrawPlayer(backDC);
+			// 나무와 플레이어를 발 Y(밑둥 Y) 기준으로 정렬해서 그림
+			{
+				int playerFootY = g_player.y + g_player.h;
+				bool playerDrawn = false;
+				// 살아있는 나무를 발 Y 기준으로 정렬 (삽입 정렬)
+				std::vector<size_t> order;
+				for (size_t i = 0; i < g_trees.size(); i++)
+					if (g_trees[i].isAlive) order.push_back(i);
+				for (size_t a = 1; a < order.size(); a++) {
+					size_t key = order[a];
+					int keyY = g_trees[key].y + g_trees[key].h;
+					size_t b = a;
+					while (b > 0 && (g_trees[order[b - 1]].y + g_trees[order[b - 1]].h) > keyY) {
+						order[b] = order[b - 1]; b--;
+					}
+					order[b] = key;
+				}
+				// 정렬된 순서로 나무 하나씩, 플레이어보다 발 Y 작으면 나무 먼저
+				HDC memDC = CreateCompatibleDC(backDC);
+				for (size_t i = 0; i < order.size(); i++) {
+					Tree& t = g_trees[order[i]];
+					int treeFootY = t.y + t.h;
+					if (!playerDrawn && playerFootY <= treeFootY) {
+						DrawPlayer(backDC);
+						playerDrawn = true;
+					}
+					int shakeOff = 0;
+					if (t.shakeTimer > 0) {
+						if (t.shakeTimer % 2 == 1) shakeOff = TREE_SHAKE_OFFX;
+						else                       shakeOff = -TREE_SHAKE_OFFX;
+					}
+					int sx = t.x - cameraX + shakeOff;
+					int sy = t.y - cameraY;
+					if (sx + t.w >= 0 && sx <= g_logicalW && sy + t.h >= 0 && sy <= g_logicalH) {
+						HBITMAP src = NULL;
+						if (t.kind == TREE_KIND_1)      src = g_hBitmap_tree1;
+						else if (t.kind == TREE_KIND_2) src = g_hBitmap_tree2;
+						else                            src = g_hBitmap_tree3;
+						if (src != NULL) {
+							HBITMAP oldB = (HBITMAP)SelectObject(memDC, src);
+							TransparentBlt(backDC, sx, sy, t.w, t.h, memDC, 0, 0, t.w, t.h, EXT_TRANSPARENT);
+							SelectObject(memDC, oldB);
+						}
+					}
+				}
+				DeleteDC(memDC);
+				if (!playerDrawn) DrawPlayer(backDC); // 모든 나무보다 플레이어가 앞에 있을 때
+			}
+
+			DrawDroppedItem(backDC);
 
 			// 안내
 			SetBkMode(backDC, TRANSPARENT);
