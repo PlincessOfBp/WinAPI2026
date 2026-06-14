@@ -475,10 +475,10 @@ static Turret g_turrets[MAX_TURRETS];
 static Monster g_monsters[MAX_MONSTERS];
 
 // 디펜스 맵 비트맵
-static HBITMAP g_hBitmap_defMap = NULL;
-static HBITMAP g_hBitmap_defHouse = NULL;
-static HBITMAP g_hBitmap_slime[7] = { NULL, };
-static HBITMAP g_hBitmap_bat[4] = { NULL, };
+static HBITMAP g_hBitmap_defMap     = NULL;
+static HBITMAP g_hBitmap_defHouse   = NULL;
+static HBITMAP g_hBitmap_slime[7]   = { NULL, };
+static HBITMAP g_hBitmap_bat[4]     = { NULL, };
 
 // 기지 (디펜스 집)
 #define DEFENSE_HOUSE_W      64
@@ -488,19 +488,19 @@ static inline int DefenseHouseX() { return g_logicalW / 2 - DEFENSE_HOUSE_W / 2;
 static inline int DefenseHouseY() { return g_logicalH / 2 - DEFENSE_HOUSE_H / 2; }
 #define DEFENSE_HOUSE_X      DefenseHouseX()
 #define DEFENSE_HOUSE_Y      DefenseHouseY()
-static int g_defenseHouseHP = 100;
+static int g_defenseHouseHP    = 100;
 static int g_defenseHouseHPMax = 100;
 
 // 웨이브 시스템
-static int       g_currentWave = 1;
-static WaveState g_waveState = WAVE_PREP;
-static int       g_wavePrepTimer = 0;    // PREP 카운트다운
-static int       g_waveSpawnTimer = 0;    // 스폰 간격 카운트
+static int       g_currentWave        = 1;
+static WaveState g_waveState          = WAVE_PREP;
+static int       g_wavePrepTimer      = 0;    // PREP 카운트다운
+static int       g_waveSpawnTimer     = 0;    // 스폰 간격 카운트
 static int       g_waveSlimeRemaining = 0;    // 이번 웨이브 남은 슬라임 스폰 수
-static int       g_waveBatRemaining = 0;    // 이번 웨이브 남은 박쥐 스폰 수
-static int       g_waveBossRemaining = 0;    // 이번 웨이브 남은 보스 스폰 수
-static int       g_waveAliveMonsters = 0;
-static bool      g_defenseSuccess = false;
+static int       g_waveBatRemaining   = 0;    // 이번 웨이브 남은 박쥐 스폰 수
+static int       g_waveBossRemaining  = 0;    // 이번 웨이브 남은 보스 스폰 수
+static int       g_waveAliveMonsters  = 0;
+static bool      g_defenseSuccess     = false;
 
 #define WAVE_TOTAL              5
 #define WAVE_PREP_TICKS       166      // 약 5초 (30ms × 166)
@@ -646,7 +646,7 @@ void UpdateFarmAtNight() {
 
 static bool IsClickInNextDayBtn(int mx, int my) {
 	return (mx >= NEXTDAY_BTN_X && mx < NEXTDAY_BTN_X + NEXTDAY_BTN_W &&
-		my >= NEXTDAY_BTN_Y && my < NEXTDAY_BTN_Y + NEXTDAY_BTN_H);
+		    my >= NEXTDAY_BTN_Y && my < NEXTDAY_BTN_Y + NEXTDAY_BTN_H);
 }
 
 void DrawNextDayButton(HDC hdc) {
@@ -1112,8 +1112,8 @@ static void GetWaveSpawnCount(int wave, int* outSlime, int* outBat, int* outBoss
 		b += (wk - 1) * 1;
 	}
 	if (outSlime) *outSlime = s;
-	if (outBat)   *outBat = b;
-	if (outBoss)  *outBoss = bs;
+	if (outBat)   *outBat   = b;
+	if (outBoss)  *outBoss  = bs;
 }
 
 // 빈 몬스터 슬롯 찾기
@@ -3125,8 +3125,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		g_hBitmap_item[ITEM_STRAWBERRY] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Strawberry_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		// ----- [디펜스 시스템] 비트맵 로드 -----
-		g_hBitmap_defMap = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\디펜스\\DefenseMap_1280x1280.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_defHouse = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\디펜스\\DefenseMap_House_64x64.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_defMap   = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\디펜스\\DefenseMap_1280x1280.bmp"),       IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_defHouse = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\디펜스\\DefenseMap_House_64x64.bmp"),     IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		for (int sN = 0; sN < 7; sN++) {
 			wchar_t path[256];
 			wsprintfW(path, L"이미지소스\\디펜스\\Slime%d_64x64.bmp", sN);
