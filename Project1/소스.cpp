@@ -53,7 +53,7 @@ static void UpdateViewport() {
 	int side = (g_winW < g_winH) ? g_winW : g_winH;
 	double scale = (double)side / (double)CLIENT_W;
 	if (scale <= 0.0) scale = 1.0;
-
+	
 	g_logicalW = (int)(g_winW / scale + 0.5);
 	g_logicalH = (int)(g_winH / scale + 0.5);
 	if (g_logicalW < 1) g_logicalW = 1;
