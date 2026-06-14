@@ -475,10 +475,10 @@ static Turret g_turrets[MAX_TURRETS];
 static Monster g_monsters[MAX_MONSTERS];
 
 // 디펜스 맵 비트맵
-static HBITMAP g_hBitmap_defMap     = NULL;
-static HBITMAP g_hBitmap_defHouse   = NULL;
-static HBITMAP g_hBitmap_slime[7]   = { NULL, };
-static HBITMAP g_hBitmap_bat[4]     = { NULL, };
+static HBITMAP g_hBitmap_defMap = NULL;
+static HBITMAP g_hBitmap_defHouse = NULL;
+static HBITMAP g_hBitmap_slime[7] = { NULL, };
+static HBITMAP g_hBitmap_bat[4] = { NULL, };
 
 // 기지 (디펜스 집)
 #define DEFENSE_HOUSE_W      64
@@ -488,19 +488,19 @@ static inline int DefenseHouseX() { return g_logicalW / 2 - DEFENSE_HOUSE_W / 2;
 static inline int DefenseHouseY() { return g_logicalH / 2 - DEFENSE_HOUSE_H / 2; }
 #define DEFENSE_HOUSE_X      DefenseHouseX()
 #define DEFENSE_HOUSE_Y      DefenseHouseY()
-static int g_defenseHouseHP    = 100;
+static int g_defenseHouseHP = 100;
 static int g_defenseHouseHPMax = 100;
 
 // 웨이브 시스템
-static int       g_currentWave        = 1;
-static WaveState g_waveState          = WAVE_PREP;
-static int       g_wavePrepTimer      = 0;    // PREP 카운트다운
-static int       g_waveSpawnTimer     = 0;    // 스폰 간격 카운트
+static int       g_currentWave = 1;
+static WaveState g_waveState = WAVE_PREP;
+static int       g_wavePrepTimer = 0;    // PREP 카운트다운
+static int       g_waveSpawnTimer = 0;    // 스폰 간격 카운트
 static int       g_waveSlimeRemaining = 0;    // 이번 웨이브 남은 슬라임 스폰 수
-static int       g_waveBatRemaining   = 0;    // 이번 웨이브 남은 박쥐 스폰 수
-static int       g_waveBossRemaining  = 0;    // 이번 웨이브 남은 보스 스폰 수
-static int       g_waveAliveMonsters  = 0;
-static bool      g_defenseSuccess     = false;
+static int       g_waveBatRemaining = 0;    // 이번 웨이브 남은 박쥐 스폰 수
+static int       g_waveBossRemaining = 0;    // 이번 웨이브 남은 보스 스폰 수
+static int       g_waveAliveMonsters = 0;
+static bool      g_defenseSuccess = false;
 
 #define WAVE_TOTAL              5
 #define WAVE_PREP_TICKS       166      // 약 5초 (30ms × 166)
@@ -646,7 +646,7 @@ void UpdateFarmAtNight() {
 
 static bool IsClickInNextDayBtn(int mx, int my) {
 	return (mx >= NEXTDAY_BTN_X && mx < NEXTDAY_BTN_X + NEXTDAY_BTN_W &&
-		    my >= NEXTDAY_BTN_Y && my < NEXTDAY_BTN_Y + NEXTDAY_BTN_H);
+		my >= NEXTDAY_BTN_Y && my < NEXTDAY_BTN_Y + NEXTDAY_BTN_H);
 }
 
 void DrawNextDayButton(HDC hdc) {
@@ -714,6 +714,17 @@ static int g_gold = 0; // 초기 골드 (외부에서 조정 가능)
 static const wchar_t* g_seedNames[SHOP_SEED_COUNT] = { L"감자 씨앗", L"당근 씨앗", L"대황 씨앗", L"딸기 씨앗" };
 static int             g_seedPrices[SHOP_SEED_COUNT] = { 25, 15, 50, 100 };
 
+// 상점 터렛 데이터 (외부에서 가격 조정 가능)
+static int   g_turretPrice = 100;           // 터렛 구매가 — 외부에서 조정 가능
+static const wchar_t* g_turretName = L"터렛";
+// 터렛 아이콘 위치 (WM_PAINT TransparentBlt 좌표와 동일)
+static int g_turretItemX = 100 + 25;
+static int g_turretItemY = 100 + 25;
+#define SHOP_TURRET_W 48
+#define SHOP_TURRET_H 48
+// hover 인덱스 통합: 0~SHOP_SEED_COUNT-1 = 씨앗, SHOP_SEED_COUNT = 터렛
+#define SHOP_HOVER_TURRET SHOP_SEED_COUNT
+
 // ---------- 아이템 판매가 (ItemType 인덱스 기준, 0이면 판매 불가) ----------
 // 도구(0~4)는 0으로 두어 판매 불가 처리. 외부에서 이 값만 바꾸면 가격 조정 가능.
 static int g_itemSellPrice[ITEM_COUNT] = {
@@ -735,6 +746,7 @@ static int g_itemSellPrice[ITEM_COUNT] = {
 	80,   // ITEM_POTATO         감자
 	220,  // ITEM_RHUBARB        대황
 	120,  // ITEM_STRAWBERRY     딸기
+	50,   // ITEM_TURRET         터렛 (판매가, 구매가의 절반)
 };
 // 씨앗 아이템 화면 위치 (WM_PAINT의 TransparentBlt 좌표와 동일)
 static int g_seedItemX[SHOP_SEED_COUNT] = { 100 + 25, 100 + 95, 100 + 95 + 70, 100 + 90 + 140 };
@@ -1112,8 +1124,8 @@ static void GetWaveSpawnCount(int wave, int* outSlime, int* outBat, int* outBoss
 		b += (wk - 1) * 1;
 	}
 	if (outSlime) *outSlime = s;
-	if (outBat)   *outBat   = b;
-	if (outBoss)  *outBoss  = bs;
+	if (outBat)   *outBat = b;
+	if (outBoss)  *outBoss = bs;
 }
 
 // 빈 몬스터 슬롯 찾기
@@ -1915,6 +1927,12 @@ static bool IsClickOnUI(int mx, int my) {
 // 퀵슬롯 i번 도구를 현재 도구로 선택
 static void SelectQuickSlot(int i) {
 	if (i < 0 || i >= QUICKSLOT_COUNT) return;
+	if (g_selectedQuickSlot == i) {
+		// 이미 선택된 슬롯을 다시 누르면 선택 해제
+		g_selectedQuickSlot = -1;
+		g_currentTool = ITEM_NONE;
+		return;
+	}
 	g_selectedQuickSlot = i;
 	g_currentTool = g_quickSlot[i]; // TOOL_NONE 일 수도 (빈 슬롯)
 }
@@ -3035,7 +3053,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	PAINTSTRUCT ps;
 	HBRUSH hBrush = (HBRUSH)GetStockObject(BLACK_BRUSH), oldBrush = (HBRUSH)GetStockObject(BLACK_BRUSH);
 	HPEN hPen = (HPEN)GetStockObject(BLACK_PEN), oldPen = (HPEN)GetStockObject(BLACK_PEN);
-	TCHAR str[100];
 
 	static HBITMAP hBitmap;
 	static RECT rc;
@@ -3062,6 +3079,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 	static HBITMAP hBitmap_shopUi[2]; // 0 아이템 이름 가격 적는곳, 1 구매할 아이템 전시하는곳
 	static HBITMAP hBitmap_test; // 테스트용 (나중에 제거) - 내 인벤토리 (판매할 것)
 	static HBITMAP hBitmap_seedItem[4]; //0감자 1당근 2대황 3딸기
+	static HBITMAP hBitmap_shopTurret; // 구매 가능한 터렛
 
 	switch (iMessage)
 	{
@@ -3123,10 +3141,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		g_hBitmap_item[ITEM_POTATO] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Potato_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		g_hBitmap_item[ITEM_RHUBARB] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Rhubarb_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		g_hBitmap_item[ITEM_STRAWBERRY] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\icon\\Strawberry_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_item[ITEM_TURRET] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\디펜스\\turret_shoot_옆1_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		// ----- [디펜스 시스템] 비트맵 로드 -----
-		g_hBitmap_defMap   = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\디펜스\\DefenseMap_1280x1280.bmp"),       IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-		g_hBitmap_defHouse = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\디펜스\\DefenseMap_House_64x64.bmp"),     IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_defMap = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\디펜스\\DefenseMap_1280x1280.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+		g_hBitmap_defHouse = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\디펜스\\DefenseMap_House_64x64.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		for (int sN = 0; sN < 7; sN++) {
 			wchar_t path[256];
 			wsprintfW(path, L"이미지소스\\디펜스\\Slime%d_64x64.bmp", sN);
@@ -3278,6 +3297,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 		hBitmap_shopUi[0] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\inventory\\emptyUi_300x300.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		hBitmap_shopUi[1] = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\inventory\\inventory_1.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 		hBitmap_test = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\농장\\inventory\\inventory_4.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+
+		// 상점 터렛 아이템 로드
+		hBitmap_shopTurret = (HBITMAP)LoadImage(g_hInst, TEXT("이미지소스\\디펜스\\turret_shoot_옆1_48x48.bmp"), IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 
 		canFishing = false; // 낚시 가능 영역에 있을 때만 true로 설정됨
 
@@ -3532,7 +3554,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			SetBkMode(backDC, TRANSPARENT);
 			SetTextColor(backDC, RGB(0, 0, 0));
 
-			if (g_shopHoverIdx >= 0) {
+			if (g_shopHoverIdx >= 0 && g_shopHoverIdx < SHOP_SEED_COUNT) {
 				// 씨앗 아이템 호버: 이름 + 구매 안내
 				TextOut(backDC, 560, 210, g_seedNames[g_shopHoverIdx], (int)wcslen(g_seedNames[g_shopHoverIdx]));
 				SelectObject(backDC, hFontSmall);
@@ -3540,6 +3562,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				wsprintfW(priceStr, L"가격: %d골드", g_seedPrices[g_shopHoverIdx]);
 				TextOut(backDC, 560, 280, priceStr, (int)wcslen(priceStr));
 				if (g_gold < g_seedPrices[g_shopHoverIdx]) {
+					SetTextColor(backDC, RGB(200, 0, 0));
+					TextOut(backDC, 560, 310, L"돈이 부족합니다.", 8);
+					SetTextColor(backDC, RGB(0, 0, 0));
+				}
+				else {
+					TextOut(backDC, 560, 310, L"좌클릭으로 1개 구매.", 11);
+				}
+			}
+			else if (g_shopHoverIdx == SHOP_HOVER_TURRET) {
+				// 터렛 호버: 이름 + 구매 안내
+				TextOut(backDC, 560, 210, g_turretName, (int)wcslen(g_turretName));
+				SelectObject(backDC, hFontSmall);
+				wchar_t priceStr[64];
+				wsprintfW(priceStr, L"가격: %d골드", g_turretPrice);
+				TextOut(backDC, 560, 280, priceStr, (int)wcslen(priceStr));
+				if (g_gold < g_turretPrice) {
 					SetTextColor(backDC, RGB(200, 0, 0));
 					TextOut(backDC, 560, 310, L"돈이 부족합니다.", 8);
 					SetTextColor(backDC, RGB(0, 0, 0));
@@ -3556,7 +3594,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 					L"없음", L"호미", L"물뿌리개", L"낚싯대", L"도끼",
 					L"당근 씨앗", L"감자 씨앗", L"대황 씨앗", L"딸기 씨앗",
 					L"잉어", L"농어", L"복어", L"오징어",
-					L"나무", L"당근", L"감자", L"대황", L"딸기"
+					L"나무", L"당근", L"감자", L"대황", L"딸기",
+					L"터렛"
 				};
 				const wchar_t* itemName = (hovItem >= 0 && hovItem < ITEM_COUNT) ? itemNames[hovItem] : L"알 수 없음";
 				SelectObject(backDC, hFontBig);
@@ -3600,6 +3639,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 				hShopDC, 0, 0, 48, 48, RGB(255, 0, 255));
 			SelectObject(hShopDC, hBitmap_seedItem[3]);
 			TransparentBlt(backDC, 100 + 90 + 140, 200 + 25, 48, 48,
+				hShopDC, 0, 0, 48, 48, RGB(255, 0, 255));
+
+			// 터렛 판매 슬롯
+			SelectObject(hShopDC, hBitmap_shopUi[1]);
+			TransparentBlt(backDC, 100, 100, 300, 96,
+				hShopDC, 0, 0, 300, 96, RGB(255, 0, 255));
+			SelectObject(hShopDC, hBitmap_shopTurret);
+			TransparentBlt(backDC, 100 + 25, 100 + 25, 48, 48,
 				hShopDC, 0, 0, 48, 48, RGB(255, 0, 255));
 
 			SelectObject(hShopDC, hOldShop);
@@ -3665,6 +3712,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 					AddItemToBag(seedItemMap[i]);
 					InvalidateRect(hWnd, NULL, FALSE);
 					break;
+				}
+			}
+
+			// 터렛 구매 클릭
+			if (mx >= g_turretItemX && mx < g_turretItemX + SHOP_TURRET_W &&
+				my >= g_turretItemY && my < g_turretItemY + SHOP_TURRET_H) {
+				if (g_gold >= g_turretPrice) {
+					g_gold -= g_turretPrice;
+					AddItemToBag(ITEM_TURRET);
+					InvalidateRect(hWnd, NULL, FALSE);
 				}
 			}
 
@@ -3942,6 +3999,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 					my >= g_seedItemY[i] && my < g_seedItemY[i] + SHOP_SEED_H) {
 					g_shopHoverIdx = i;
 					break;
+				}
+			}
+			// 터렛 호버
+			if (g_shopHoverIdx < 0) {
+				if (mx >= g_turretItemX && mx < g_turretItemX + SHOP_TURRET_W &&
+					my >= g_turretItemY && my < g_turretItemY + SHOP_TURRET_H) {
+					g_shopHoverIdx = SHOP_HOVER_TURRET;
 				}
 			}
 			// 인벤토리 슬롯 호버
@@ -4357,7 +4421,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpszCmdPa
 
 	SetProcessDPIAware();
 
-	srand(time(NULL));
+	srand((unsigned int)time(NULL));
 
 	WndClass.cbSize = sizeof(WndClass);
 	WndClass.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
@@ -4389,5 +4453,5 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpszCmdPa
 		TranslateMessage(&Message);
 		DispatchMessage(&Message);
 	}
-	return Message.wParam;
+	return (int)Message.wParam;
 }
