@@ -448,17 +448,17 @@ enum WaveState {
 	WAVE_FIGHTING = 2   // 스폰 끝나고 남은 몬스터 처치 대기
 };
 
-// 몬스터 구조체 (웨이포인트 추적)
+// 몬스터 구조체 (타일맵 경로 추적)
 struct Monster {
 	bool alive;
 	int  type;                  // MonsterType
-	float x, y;                 // 화면 좌표
+	float x, y;                 // 월드 좌표 (1280x1280 기준), 그리기 시에만 화면 좌표로 변환
 	int  w, h;                  // 충돌/표시 크기
 	int  hp;
 	float speed;
 	int  animFrame;
 	int  animTimer;
-	int  currentWaypointIndex;  // 현재 추적 중인 웨이포인트
+	int  currentWaypointIndex;  // 현재 추적 중인 웨이포인트 (미사용, 호환용)
 };
 
 // 포탑 구조체
@@ -480,12 +480,12 @@ static HBITMAP g_hBitmap_defHouse = NULL;
 static HBITMAP g_hBitmap_slime[7] = { NULL, };
 static HBITMAP g_hBitmap_bat[4] = { NULL, };
 
-// 기지 (디펜스 집)
+// 기지 (디펜스 집) — 화면 좌표는 타일맵 집 위치(타일 1)로부터 계산
 #define DEFENSE_HOUSE_W      64
 #define DEFENSE_HOUSE_H      64
-// 화면 크기가 동적으로 바뀌므로 함수형으로 위치 계산
-static inline int DefenseHouseX() { return g_logicalW / 2 - DEFENSE_HOUSE_W / 2; }
-static inline int DefenseHouseY() { return g_logicalH / 2 - DEFENSE_HOUSE_H / 2; }
+// 전방 선언 (본체는 g_defMap 배열 정의 이후에 위치)
+static int DefenseHouseX();
+static int DefenseHouseY();
 #define DEFENSE_HOUSE_X      DefenseHouseX()
 #define DEFENSE_HOUSE_Y      DefenseHouseY()
 static int g_defenseHouseHP = 100;
@@ -505,6 +505,103 @@ static bool      g_defenseSuccess = false;
 #define WAVE_TOTAL              5
 #define WAVE_PREP_TICKS       166      // 약 5초 (30ms × 166)
 #define SPAWN_INTERVAL_TICKS   30      // 약 0.9초마다 1마리
+
+// ===== 디펜스 타일맵 배열 (40x40) =====
+// 0=빈 땅, 1=집, 2=포탑 설치 가능 땅, 3=포탑, 4=몬스터 나오는 곳
+// 5=왼쪽이동, 6=위쪽이동, 7=오른쪽이동, 8=아래쪽이동
+// 1280x1280 맵을 32픽셀 타일로 나눈 40x40 배열
+static int g_defMap[MAP_TILE_H][MAP_TILE_W] = {
+	{ 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0 }, // 0
+	{ 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0 }, // 1
+	{ 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0 }, // 2
+	{ 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0 }, // 3
+	{ 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0 }, // 4
+	{ 0,0,0,0,0,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,0,0,0,0,0 }, // 5
+	{ 0,0,0,0,0,2,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,2,0,0,0,0,0 }, // 6
+	{ 0,0,0,0,0,2,0,7,7,7, 7,7,7,7,7,7,7,7,7,7, 7,7,7,7,7,7,7,7,7,7, 7,8,8,0,2,0,0,0,0,0 }, // 7
+	{ 0,0,0,0,0,2,0,7,7,7, 7,7,7,7,7,7,7,7,7,7, 7,7,7,7,7,7,7,7,7,7, 7,8,8,0,2,0,0,0,0,0 }, // 8
+	{ 0,0,0,0,0,2,0,6,6,6, 7,7,7,7,7,7,7,7,7,7, 7,7,7,7,7,7,7,7,7,7, 7,8,8,0,2,0,0,0,0,0 }, // 9
+	{ 0,0,0,0,0,2,0,6,6,6, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 8,8,8,0,2,0,0,0,0,0 }, // 10
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,0, 8,8,8,0,2,0,0,0,0,0 }, // 11
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,2,0, 8,8,8,0,2,0,0,0,0,0 }, // 12
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,7,7,7,7,7,7,7, 7,7,7,7,7,8,8,0,2,0, 8,8,8,0,2,0,0,0,0,0 }, // 13
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,7,7,7,7,7,7,7, 7,7,7,7,7,8,8,0,2,0, 8,8,8,0,2,0,0,0,0,0 }, // 14
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,6,6,6,7,7,7,7, 7,7,7,7,7,8,8,0,2,0, 8,8,8,0,2,0,0,0,0,0 }, // 15
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,6,6,6,0,0,0,0, 0,0,0,0,8,8,8,0,2,0, 8,8,8,0,2,0,0,0,0,0 }, // 16
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,6,6,6,0,2,2,2, 2,2,2,0,8,8,8,0,2,0, 8,8,8,0,2,0,0,0,0,0 }, // 17
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,6,6,6,0,2,0,0, 0,0,2,0,8,8,8,0,2,0, 8,8,8,0,2,0,0,0,0,0 }, // 18
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,6,6,6,0,2,0,1, 1,0,2,0,8,8,8,0,2,0, 8,8,8,0,2,0,0,0,0,0 }, // 19
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,6,6,6,0,2,0,1, 1,0,0,0,8,8,8,0,2,0, 8,8,8,0,2,0,0,0,0,0 }, // 20
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,6,6,6,0,2,0,6, 6,5,5,5,5,8,8,0,2,0, 8,8,8,0,2,0,0,0,0,0 }, // 21
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,6,6,6,0,2,0,6, 6,5,5,5,5,5,5,0,2,0, 8,8,8,0,2,0,0,0,0,0 }, // 22
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,6,6,6,0,2,0,6, 6,5,5,5,5,5,5,0,2,0, 8,8,8,0,2,0,0,0,0,0 }, // 23
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,6,6,6,0,2,0,0, 0,0,0,0,0,0,0,0,2,0, 8,8,8,0,2,0,0,0,0,0 }, // 24
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,6,6,6,0,2,2,2, 2,2,2,2,2,2,2,2,2,0, 8,8,8,0,2,0,0,0,0,0 }, // 25
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,6,6,6,0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 8,8,8,0,2,0,0,0,0,0 }, // 26
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,6,6,5, 5,5,5,5, 5,5,5,5,5,5,5,5,5,5, 8,8,8,0,2,0,0,0,0,0 }, // 27
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,6,6,5, 5,5,5,5, 5,5,5,5,5,5,5,5,5,5, 5,5,5,0,2,0,0,0,0,0 }, // 28
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,6,6,5, 5,5,5,5, 5,5,5,5,5,5,5,5,5,5, 5,5,5,0,2,0,0,0,0,0 }, // 29
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,0,0,0,0, 0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,2,0,0,0,0,0 }, // 30
+	{ 0,0,0,0,0,2,0,6,6,6, 0,2,2,2,2,2, 2,2,2,2, 2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2 }, // 31
+	{ 0,0,0,0,0,2,0,6,6,6, 0,0,0,0,0,0, 0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0 }, // 32
+	{ 0,0,0,0,0,2,0,6,6,5, 5,5,5,5,5,5, 5,5,5,5, 5,5,5,5,5,5,5,5,5,5, 5,5,5,5,5,5,5,5,5,5 }, // 33
+	{ 0,0,0,0,0,2,0,6,6,5, 5,5,5,5,5,5, 5,5,5,5, 5,5,5,5,5,5,5,5,5,5, 5,5,5,5,5,5,5,5,5,4 }, // 34 (4=스폰)
+	{ 0,0,0,0,0,2,0,6,6,5, 5,5,5,5,5,5, 5,5,5,5, 5,5,5,5,5,5,5,5,5,5, 5,5,5,5,5,5,5,5,5,5 }, // 35
+	{ 0,0,0,0,0,2,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0 }, // 36
+	{ 0,0,0,0,0,2,2,2,2,2, 2,2,2,2,2,2, 2,2,2,2, 2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2 }, // 37
+	{ 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0 }, // 38
+	{ 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0, 0,0,0,0, 0,0,0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,0,0 }, // 39
+};
+
+// 타일 좌표 → 월드 좌표(타일 중심)
+static inline int TileToWorldX(int col) { return col * TILE_SIZE + TILE_SIZE / 2; }
+static inline int TileToWorldY(int row) { return row * TILE_SIZE + TILE_SIZE / 2; }
+
+// 월드 좌표 → 타일 인덱스
+static inline int WorldToTileCol(float wx) { return (int)(wx / TILE_SIZE); }
+static inline int WorldToTileRow(float wy) { return (int)(wy / TILE_SIZE); }
+
+// 월드 좌표 → 화면 좌표 (디펜스 씬: 1280x1280 → g_logicalW x g_logicalH)
+static inline int DefWorldToScreenX(float wx) { return (int)(wx * g_logicalW / 1280.0f); }
+static inline int DefWorldToScreenY(float wy) { return (int)(wy * g_logicalH / 1280.0f); }
+
+// 스폰 위치(타일 4) 찾기 — 없으면 맵 우하단 기본값
+static void GetDefenseSpawnWorld(float* outX, float* outY) {
+	for (int r = 0; r < MAP_TILE_H; r++) {
+		for (int c = 0; c < MAP_TILE_W; c++) {
+			if (g_defMap[r][c] == 4) {
+				*outX = (float)TileToWorldX(c);
+				*outY = (float)TileToWorldY(r);
+				return;
+			}
+		}
+	}
+	*outX = 1260.0f; *outY = 1060.0f; // 기본값
+}
+
+// 집 위치(타일 1) 찾기 — 없으면 맵 중앙
+static void GetDefenseHouseWorld(float* outX, float* outY) {
+	for (int r = 0; r < MAP_TILE_H; r++) {
+		for (int c = 0; c < MAP_TILE_W; c++) {
+			if (g_defMap[r][c] == 1) {
+				*outX = (float)TileToWorldX(c);
+				*outY = (float)TileToWorldY(r);
+				return;
+			}
+		}
+	}
+	*outX = 640.0f; *outY = 640.0f; // 기본값
+}
+
+// DefenseHouseX/Y 본체 (전방 선언은 위쪽에 있음)
+static int DefenseHouseX() {
+	float wx, wy; GetDefenseHouseWorld(&wx, &wy);
+	return DefWorldToScreenX(wx) - DEFENSE_HOUSE_W / 2;
+}
+static int DefenseHouseY() {
+	float wx, wy; GetDefenseHouseWorld(&wx, &wy);
+	return DefWorldToScreenY(wy) - DEFENSE_HOUSE_H / 2;
+}
 
 // ===== 웨이포인트 (나선형 길) =====
 // 사용자가 빨간 화살표로 표시한 경로:
@@ -1151,7 +1248,7 @@ static int FindFreeMonsterSlot() {
 	return -1;
 }
 
-// 몬스터 1마리 스폰 (웨이포인트 0번 위치에서 출발)
+// 몬스터 1마리 스폰 (타일맵의 스폰 위치(4)에서 출발, 월드 좌표 기준)
 static void SpawnOneMonster(int monsterType) {
 	int idx = FindFreeMonsterSlot();
 	if (idx < 0) return;
@@ -1160,57 +1257,42 @@ static void SpawnOneMonster(int monsterType) {
 	m.type = monsterType;
 	m.animFrame = 0;
 	m.animTimer = 0;
-	m.currentWaypointIndex = 1;  // 0번 출발점 → 1번부터 따라감
-
-	// 첫 웨이포인트(시작점) 위치에서 스폰
-	int sx, sy;
-	GetWaypointScreen(0, &sx, &sy);
+	m.currentWaypointIndex = 0; // 미사용(호환용)
 
 	if (monsterType == MON_BOSS) {
 		m.w = 128; m.h = 128;
 		m.hp = 300;
-		m.speed = 2.2f;
+		m.speed = 2.2f * 1280.0f / 800.0f; // 월드 좌표 속도로 환산
 	}
 	else if (monsterType == MON_BAT) {
 		m.w = 64; m.h = 68;
 		m.hp = 20;
-		m.speed = 1.6f;
+		m.speed = 1.6f * 1280.0f / 800.0f;
 	}
 	else { // SLIME
 		m.w = 64; m.h = 64;
 		m.hp = 15;
-		m.speed = 1.2f;
+		m.speed = 1.2f * 1280.0f / 800.0f;
 	}
-	m.x = (float)(sx - m.w / 2);
-	m.y = (float)(sy - m.h / 2);
+
+	// 스폰 위치: 타일맵의 4(스폰) 타일 중심 월드 좌표
+	float sx, sy;
+	GetDefenseSpawnWorld(&sx, &sy);
+	m.x = sx;
+	m.y = sy;
 }
 
-// 좌표가 '잔디'(포탑 배치 가능)인지 검사
-// 단순화: 노란 길에서 충분히 떨어진 영역만 잔디로 인정.
-// 사용자가 정확한 잔디/길 격자 데이터 만들기 전까지의 임시 검사.
+// 좌표가 포탑 배치 가능(타일 2)인지 타일 배열로 검사
+// mx, my는 게임 화면 좌표(logical) → 월드 좌표로 변환 후 타일 조회
 static bool IsGrassForTurret(int mx, int my) {
-	// 1) 디펜스 씬 영역 안에 있어야 함
-	if (mx < 50 || mx > g_logicalW - 50) return false;
-	if (my < 80 || my > g_logicalH - 50) return false;
-	// 2) 집 주변 너무 가까우면 거부
-	int hx = DEFENSE_HOUSE_X, hy = DEFENSE_HOUSE_Y;
-	if (mx >= hx - 30 && mx < hx + DEFENSE_HOUSE_W + 30 &&
-		my >= hy - 30 && my < hy + DEFENSE_HOUSE_H + 30) return false;
-	// 3) 노란 길에서 50픽셀 이상 떨어진 곳만 잔디로 인정
-	for (int i = 0; i < WAYPOINT_COUNT - 1; i++) {
-		int x1, y1, x2, y2;
-		GetWaypointScreen(i, &x1, &y1);
-		GetWaypointScreen(i + 1, &x2, &y2);
-		// 두 점 사이 거리 (수직 또는 수평 길이므로 간단히)
-		int minX = (x1 < x2) ? x1 : x2;
-		int maxX = (x1 > x2) ? x1 : x2;
-		int minY = (y1 < y2) ? y1 : y2;
-		int maxY = (y1 > y2) ? y1 : y2;
-		// 길 양옆 40px 안이면 거부
-		if (mx >= minX - 40 && mx <= maxX + 40 &&
-			my >= minY - 40 && my <= maxY + 40) return false;
-	}
-	return true;
+	// 화면 좌표 → 월드 좌표 (디펜스 씬: g_logicalW/H → 1280x1280)
+	int wx = mx * 1280 / (g_logicalW > 0 ? g_logicalW : 1);
+	int wy = my * 1280 / (g_logicalH > 0 ? g_logicalH : 1);
+	int col = wx / TILE_SIZE;
+	int row = wy / TILE_SIZE;
+	if (col < 0 || col >= MAP_TILE_W) return false;
+	if (row < 0 || row >= MAP_TILE_H) return false;
+	return (g_defMap[row][col] == 2);
 }
 
 // 빈 포탑 슬롯 찾기
@@ -1321,37 +1403,50 @@ void UpdateDefense() {
 		}
 	}
 
-	// ---- 2) 몬스터 이동 (웨이포인트 추적) ----
+	// ---- 2) 몬스터 이동 (타일맵 방향값 5~8 추적) ----
 	for (int i = 0; i < MAX_MONSTERS; i++) {
 		Monster& m = g_monsters[i];
 		if (!m.alive) continue;
 
-		// 현재 타겟 웨이포인트
-		int wpX, wpY;
-		GetWaypointScreen(m.currentWaypointIndex, &wpX, &wpY);
+		// 현재 몬스터 중심의 타일 좌표
+		int col = WorldToTileCol(m.x);
+		int row = WorldToTileRow(m.y);
 
-		float mcx = m.x + m.w / 2.0f;
-		float mcy = m.y + m.h / 2.0f;
-		float dx = (float)wpX - mcx;
-		float dy = (float)wpY - mcy;
-		float dist = (float)sqrt(dx * dx + dy * dy);
+		// 범위 안전 처리
+		if (col < 0) col = 0;
+		if (col >= MAP_TILE_W) col = MAP_TILE_W - 1;
+		if (row < 0) row = 0;
+		if (row >= MAP_TILE_H) row = MAP_TILE_H - 1;
 
-		if (dist < m.speed + 2.0f) {
-			// 웨이포인트 도착 → 다음으로
-			m.currentWaypointIndex++;
-			if (m.currentWaypointIndex >= WAYPOINT_COUNT) {
-				// 마지막 웨이포인트(집) 도달 → 집 데미지
-				int damage = (m.type == MON_BOSS) ? 100 : 10;
-				g_defenseHouseHP -= damage;
-				if (g_defenseHouseHP < 0) g_defenseHouseHP = 0;
-				m.alive = false;
-				g_waveAliveMonsters--;
-				continue;
-			}
+		int tile = g_defMap[row][col];
+
+		// 이동 방향 결정 (5=왼쪽, 6=위쪽, 7=오른쪽, 8=아래쪽)
+		// 4(스폰 타일)는 진입 방향이 왼쪽이므로 5와 동일하게 처리
+		float dx = 0, dy = 0;
+		if (tile == 5 || tile == 4) dx = -m.speed;
+		else if (tile == 6) dy = -m.speed;
+		else if (tile == 7) dx = m.speed;
+		else if (tile == 8) dy = m.speed;
+		else if (tile == 1) {
+			// 집(타일 1) 도달 → 데미지
+			int damage = (m.type == MON_BOSS) ? 100 : 10;
+			g_defenseHouseHP -= damage;
+			if (g_defenseHouseHP < 0) g_defenseHouseHP = 0;
+			m.alive = false;
+			g_waveAliveMonsters--;
+			continue;
 		}
-		else {
-			m.x += (dx / dist) * m.speed;
-			m.y += (dy / dist) * m.speed;
+		// tile 0,2,3 등 이동 방향 없는 타일이면 현재 위치 유지 (길 벗어난 경우 정지)
+
+		// 이동
+		m.x += dx;
+		m.y += dy;
+
+		// 월드 맵 범위 밖으로 나가면 제거 (길 오류 방어)
+		if (m.x < 0 || m.x >= 1280 || m.y < 0 || m.y >= 1280) {
+			m.alive = false;
+			g_waveAliveMonsters--;
+			continue;
 		}
 
 		// 애니 프레임
@@ -1371,13 +1466,17 @@ void UpdateDefense() {
 		if (tu.shootTimer < 25) continue;
 		tu.shootTimer = 0;
 		// 가장 가까운 몬스터 한 마리에게 데미지
+		// 포탑 x,y는 화면 좌표 → 월드 좌표로 변환해서 비교
+		float tuWX = (float)tu.x * 1280.0f / (g_logicalW > 0 ? g_logicalW : 1);
+		float tuWY = (float)tu.y * 1280.0f / (g_logicalH > 0 ? g_logicalH : 1);
 		int closestIdx = -1;
-		float closestDist = 250.0f * 250.0f;  // 사정거리 250px
+		float rangeWorld = 250.0f * 1280.0f / 800.0f; // 사정거리를 월드 좌표 스케일로 환산
+		float closestDist = rangeWorld * rangeWorld;
 		for (int i = 0; i < MAX_MONSTERS; i++) {
 			Monster& m = g_monsters[i];
 			if (!m.alive) continue;
-			float dx = (m.x + m.w / 2.0f) - (tu.x + tu.w / 2.0f);
-			float dy = (m.y + m.h / 2.0f) - (tu.y + tu.h / 2.0f);
+			float dx = m.x - tuWX;
+			float dy = m.y - tuWY;
 			float d2 = dx * dx + dy * dy;
 			if (d2 < closestDist) { closestDist = d2; closestIdx = i; }
 		}
@@ -1426,9 +1525,11 @@ void DrawDefenseScene(HDC hdc) {
 		SelectObject(memDC, old);
 	}
 
-	// 2) 기지 집 — 백버퍼 정중앙 (g_logicalW/H 기준)
-	int houseX = g_logicalW / 2 - DEFENSE_HOUSE_W / 2;
-	int houseY = g_logicalH / 2 - DEFENSE_HOUSE_H / 2;
+	// 2) 기지 집 — 타일맵의 집(타일 1) 위치 기준 (없으면 화면 중앙)
+	float houseWX, houseWY;
+	GetDefenseHouseWorld(&houseWX, &houseWY);
+	int houseX = DefWorldToScreenX(houseWX) - DEFENSE_HOUSE_W / 2;
+	int houseY = DefWorldToScreenY(houseWY) - DEFENSE_HOUSE_H / 2;
 	if (g_hBitmap_defHouse != NULL) {
 		HBITMAP old = (HBITMAP)SelectObject(memDC, g_hBitmap_defHouse);
 		TransparentBlt(hdc,
@@ -1451,20 +1552,26 @@ void DrawDefenseScene(HDC hdc) {
 			src = g_hBitmap_bat[f];
 		}
 		else if (m.type == MON_BOSS) {
-			// 보스: 슬라임 비트맵을 StretchBlt로 2배 (128x128)
 			int f = m.animFrame; if (f < 0 || f > 6) f = 0;
 			src = g_hBitmap_slime[f];
 		}
 		if (src == NULL) continue;
 
+		// 월드 좌표 → 화면 좌표 (m.x, m.y는 몬스터 중심 월드 좌표)
+		int drawW = m.w * g_logicalW / 1280;
+		int drawH = m.h * g_logicalH / 1280;
+		if (drawW < 1) drawW = 1;
+		if (drawH < 1) drawH = 1;
+		int screenX = DefWorldToScreenX(m.x) - drawW / 2;
+		int screenY = DefWorldToScreenY(m.y) - drawH / 2;
+
 		HBITMAP old = (HBITMAP)SelectObject(memDC, src);
 		if (m.type == MON_BOSS) {
-			// 64x64 원본 → 128x128 출력 (StretchBlt + 마젠타 키컬러 못 쓰니 TransparentBlt 활용)
-			TransparentBlt(hdc, (int)m.x, (int)m.y, m.w, m.h,
+			TransparentBlt(hdc, screenX, screenY, drawW, drawH,
 				memDC, 0, 0, 64, 64, RGB(255, 0, 255));
 		}
 		else {
-			TransparentBlt(hdc, (int)m.x, (int)m.y, m.w, m.h,
+			TransparentBlt(hdc, screenX, screenY, drawW, drawH,
 				memDC, 0, 0, m.w, m.h, RGB(255, 0, 255));
 		}
 		SelectObject(memDC, old);
