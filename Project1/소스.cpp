@@ -771,6 +771,9 @@ void DrawNextDayButton(HDC hdc) {
 }
 
 void UpdateGameTime() {
+	// 디펜스 중에는 시간이 흐르지 않음 (낮 고정)
+	if (g_currentPhase == PHASE_DEFENSE) return;
+
 	g_timeOfDay += TIME_OF_DAY_STEP;
 	if (g_timeOfDay >= 1.0f) {
 		g_timeOfDay = 0.0f;
@@ -3921,10 +3924,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			int mx = ToGameX(LOWORD(lParam));
 			int my = ToGameY(HIWORD(lParam));
 
-			// 0) [시연용] Next Day 버튼 — 항상 최우선
+			// 0) [시연용] Next Day 버튼 — 디펜스 중에는 동작 안 함
 			if (IsClickInNextDayBtn(mx, my)) {
-				AdvanceToNextDay();
-				InvalidateRect(hWnd, NULL, FALSE);
+				if (g_currentPhase != PHASE_DEFENSE) {
+					AdvanceToNextDay();
+					InvalidateRect(hWnd, NULL, FALSE);
+				}
 				break;
 			}
 
@@ -4511,9 +4516,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT iMessage, WPARAM wParam, LPARAM lParam)
 			g_selectedInv4 = -1;
 			break;
 		case 'N':
-			// [시연용] 즉시 다음 날 아침으로 스킵
-			AdvanceToNextDay();
-			InvalidateRect(hWnd, NULL, FALSE);
+			// [시연용] 즉시 다음 날 아침으로 스킵 — 디펜스 중에는 동작 안 함
+			if (g_currentPhase != PHASE_DEFENSE) {
+				AdvanceToNextDay();
+				InvalidateRect(hWnd, NULL, FALSE);
+			}
 			break;
 
 		case 'Q':
